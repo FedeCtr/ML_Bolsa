@@ -1,0 +1,40 @@
+# configuracion del proyecto ML_Bolsa
+
+# directorios de datos
+data:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  ml_ready_dir: "data/ml_ready"
+
+# configuracion de modelos
+models:
+  models_dir: "models"
+  default_name: "modelo_bolsa.pkl"
+  random_state: 42
+  test_size: 0.2
+
+# parametros de RandomForest
+ml:
+  n_estimators: 100
+  max_depth: 10
+  random_state: 42
+
+# configuracion de API
+api:
+  host: "0.0.0.0"
+  port: 5000
+  debug: false
+
+# tickers por defecto
+tickers:
+  - "AAPL"
+  - "GOOGL"
+  - "MSFT"
+  - "AMZN"
+  - "TSLA"
+
+# configuracion de logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/app.log"
