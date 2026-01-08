@@ -26,17 +26,21 @@
         .header {
             text-align: center;
             color: white;
-            margin-bottom: 40px;
+            margin-bottom: 50px;
+            padding: 40px 20px;
         }
         
         .header h1 {
-            font-size: 3em;
-            margin-bottom: 10px;
+            font-size: 4em;
+            margin-bottom: 15px;
+            font-weight: 700;
+            letter-spacing: -2px;
         }
         
         .header p {
-            font-size: 1.2em;
-            opacity: 0.9;
+            font-size: 1.3em;
+            opacity: 0.95;
+            font-weight: 300;
         }
         
         .card {
@@ -199,15 +203,15 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>ML Bolsa</h1>
-            <p>Prediccion de Mercado con Machine Learning</p>
+            <h1>Bolsa de Valores</h1>
+            <p>Prediccion con Machine Learning</p>
         </div>
         
         <div class="card">
-            <h2>Predecir Accion</h2>
+            <h2>Analizar Accion</h2>
             <div class="input-group">
                 <input type="text" id="tickerInput" placeholder="Ingresa el ticker (ej: AAPL, GOOGL, MSFT)" value="AAPL">
-                <button onclick="predict()">Predecir</button>
+                <button onclick="predict()">Analizar</button>
             </div>
             
             <div class="examples">
@@ -247,18 +251,6 @@
                     </div>
                 </div>
             </div>
-        </div>
-        
-        <div class="card">
-            <h2>Informacion</h2>
-            <p style="line-height: 1.6; color: #666;">
-                Este sistema utiliza Machine Learning (RandomForest) para predecir el movimiento de precios de acciones. 
-                El modelo analiza indicadores tecnicos como SMA, RSI, y volatilidad para hacer predicciones.
-            </p>
-            <br>
-            <p style="line-height: 1.6; color: #666;">
-                <strong>Nota:</strong> Las predicciones son unicamente para fines educativos y no constituyen consejo financiero.
-            </p>
         </div>
     </div>
     

@@ -57,15 +57,17 @@ class StockPredictor:
             
             resultado = {
                 'ticker': ticker,
+                'prediction': int(prediccion),  # 1 = sube, 0 = baja
                 'prediccion': 'SUBE' if prediccion == 1 else 'BAJA',
+                'confidence': float(max(probabilidad)),
                 'probabilidad_subida': float(probabilidad[1]),
                 'probabilidad_bajada': float(probabilidad[0]),
-                'confianza': float(max(probabilidad)),
-                'fecha': str(df.index[-1].date()),
-                'precio_actual': float(df['Close'].iloc[-1])
+                'current_price': float(df['Close'].iloc[-1]),
+                'precio_actual': float(df['Close'].iloc[-1]),
+                'fecha': str(df.index[-1].date())
             }
             
-            logger.info(f"prediccion {ticker}: {resultado['prediccion']} ({resultado['confianza']:.1%})")
+            logger.info(f"prediccion {ticker}: {resultado['prediccion']} ({resultado['confidence']:.1%})")
             
             return resultado
             
@@ -92,8 +94,8 @@ class StockPredictor:
             return None
         
         if resultado['probabilidad_subida'] > 0.6:
-            return 'COMPRA'
+            return 'COMPRAR'
         elif resultado['probabilidad_bajada'] > 0.6:
-            return 'VENTA'
+            return 'VENDER'
         else:
             return 'MANTENER'

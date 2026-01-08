@@ -12,7 +12,7 @@ logger = get_logger(__name__)
 
 
 class ModelEvaluator:
-    """evalua rendimiento de modelos ML"""
+    """evalua rendimiento de modelos ml"""
     
     def __init__(self):
         pass

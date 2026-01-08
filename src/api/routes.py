@@ -56,7 +56,7 @@ def register_routes(app):
             
             # añadir recomendacion
             recomendacion = predictor.get_recommendation(ticker.upper())
-            resultado['recomendacion'] = recomendacion
+            resultado['recommendation'] = recomendacion
             resultado['timestamp'] = datetime.now().isoformat()
             
             return jsonify(resultado)

@@ -1,5 +1,5 @@
 """
-modulo para entrenar modelos de machine learning
+modulo para entrenar modelos de ml
 """
 import pandas as pd
 import numpy as np
@@ -16,7 +16,7 @@ logger = get_logger(__name__)
 
 
 class ModelTrainer:
-    """entrena modelos ML para prediccion de acciones"""
+    """entrena modelos ml para prediccion de acciones"""
     
     def __init__(self, model_type: str = 'random_forest'):
         self.config = Config()
