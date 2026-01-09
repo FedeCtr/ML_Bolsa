@@ -37,10 +37,20 @@
             letter-spacing: -2px;
         }
         
-        .header p {
+        .header .subtitle {
             font-size: 1.3em;
             opacity: 0.95;
             font-weight: 300;
+        }
+        
+        .header .model-badge {
+            display: inline-block;
+            background: rgba(255, 255, 255, 0.2);
+            padding: 8px 20px;
+            border-radius: 20px;
+            margin-top: 15px;
+            font-size: 0.9em;
+            backdrop-filter: blur(10px);
         }
         
         .card {
@@ -141,6 +151,106 @@
             color: #ffc107;
         }
         
+        .horizonte-section {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f0f7ff;
+            border-radius: 10px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .horizonte-section h4 {
+            color: #667eea;
+            margin-bottom: 20px;
+            font-size: 1.3em;
+        }
+        
+        .horizonte-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            margin: 10px 0;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .horizonte-label {
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .horizonte-data {
+            text-align: right;
+        }
+        
+        .horizonte-magnitud {
+            font-size: 1.2em;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        
+        .horizonte-magnitud.positive {
+            color: #28a745;
+        }
+        
+        .horizonte-magnitud.negative {
+            color: #dc3545;
+        }
+        
+        .horizonte-precio {
+            color: #666;
+            font-size: 0.95em;
+        }
+        
+        .holding-box {
+            margin-top: 20px;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 10px;
+            text-align: center;
+        }
+        
+        .holding-box h4 {
+            margin-bottom: 10px;
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+        
+        .holding-box .holding-value {
+            font-size: 1.6em;
+            font-weight: bold;
+        }
+        
+        .risk-metrics {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            margin-top: 20px;
+        }
+        
+        .risk-item {
+            background: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            border: 2px solid #e0e0e0;
+        }
+        
+        .risk-label {
+            color: #666;
+            font-size: 0.85em;
+            margin-bottom: 5px;
+        }
+        
+        .risk-value {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #333;
+        }
+        
         .loading {
             text-align: center;
             padding: 20px;
@@ -204,7 +314,10 @@
     <div class="container">
         <div class="header">
             <h1>Bolsa de Valores</h1>
-            <p>Prediccion con Machine Learning</p>
+            <p class="subtitle">Prediccion con Machine Learning</p>
+            <div class="model-badge" id="modelBadge">
+                <span id="modelInfo">Cargando...</span>
+            </div>
         </div>
         
         <div class="card">
@@ -250,11 +363,81 @@
                         <div class="prediction-value" id="recommendation">-</div>
                     </div>
                 </div>
+                
+                <!-- NUEVO: Sección de horizontes temporales -->
+                <div class="horizonte-section" id="horizonteSection" style="display: none;">
+                    <h4>Horizontes de Inversión</h4>
+                    <div class="horizonte-item" id="horizonte1d">
+                        <div class="horizonte-label">1 día (Day Trading)</div>
+                        <div class="horizonte-data">
+                            <div class="horizonte-magnitud" id="mag1d">-</div>
+                            <div class="horizonte-precio" id="precio1d">-</div>
+                        </div>
+                    </div>
+                    <div class="horizonte-item" id="horizonte5d">
+                        <div class="horizonte-label">5 días (Swing Trading)</div>
+                        <div class="horizonte-data">
+                            <div class="horizonte-magnitud" id="mag5d">-</div>
+                            <div class="horizonte-precio" id="precio5d">-</div>
+                        </div>
+                    </div>
+                    <div class="horizonte-item" id="horizonte20d">
+                        <div class="horizonte-label">20 días (Posición)</div>
+                        <div class="horizonte-data">
+                            <div class="horizonte-magnitud" id="mag20d">-</div>
+                            <div class="horizonte-precio" id="precio20d">-</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- NUEVO: Recomendación de holding -->
+                <div class="holding-box" id="holdingBox" style="display: none;">
+                    <h4>Tiempo Recomendado de Mantención</h4>
+                    <div class="holding-value" id="holdingValue">-</div>
+                </div>
+                
+                <!-- NUEVO: Métricas de riesgo -->
+                <div class="risk-metrics" id="riskMetrics" style="display: none;">
+                    <div class="risk-item">
+                        <div class="risk-label">Take Profit</div>
+                        <div class="risk-value" id="takeProfit">-</div>
+                    </div>
+                    <div class="risk-item">
+                        <div class="risk-label">Stop Loss</div>
+                        <div class="risk-value" id="stopLoss">-</div>
+                    </div>
+                    <div class="risk-item">
+                        <div class="risk-label">Riesgo/Beneficio</div>
+                        <div class="risk-value" id="riskReward">-</div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
     
     <script>
+        // cargar info del modelo al iniciar
+        async function loadModelInfo() {
+            try {
+                const response = await fetch('/health');
+                const data = await response.json();
+                
+                const modelBadge = document.getElementById('modelInfo');
+                if (data.model_type === 'advanced') {
+                    modelBadge.innerHTML = `SISTEMA AVANZADO | ${data.features} | ${data.models.split(' ')[1]} Ensemble`;
+                } else if (data.model_type === 'basic') {
+                    modelBadge.innerHTML = `Sistema Básico | ${data.features}`;
+                } else {
+                    modelBadge.innerHTML = `Sin modelo - Entrena primero`;
+                }
+            } catch (error) {
+                console.error('Error cargando info del modelo:', error);
+            }
+        }
+        
+        // cargar al iniciar la pagina
+        loadModelInfo();
+        
         function setTicker(ticker) {
             document.getElementById('tickerInput').value = ticker;
         }
@@ -281,20 +464,87 @@
                     throw new Error(data.error || 'Error al hacer prediccion');
                 }
                 
-                // mostrar resultados
-                document.getElementById('currentPrice').textContent = `$${data.current_price.toFixed(2)}`;
+                // mostrar resultados - compatible con ambos sistemas
+                const precio = data.precio_actual || data.current_price;
+                document.getElementById('currentPrice').textContent = `$${precio.toFixed(2)}`;
                 
                 const predValue = document.getElementById('prediction');
-                predValue.textContent = data.prediction === 1 ? 'SUBIDA' : 'BAJADA';
-                predValue.className = 'prediction-value ' + (data.prediction === 1 ? 'buy' : 'sell');
+                const prediccion = data.prediccion || (data.prediction === 1 ? 'comprar' : 'vender');
+                predValue.textContent = prediccion.toUpperCase();
+                predValue.className = 'prediction-value ' + 
+                    (prediccion === 'comprar' || data.prediction === 1 ? 'buy' : 'sell');
                 
-                document.getElementById('confidence').textContent = `${(data.confidence * 100).toFixed(1)}%`;
+                const confianza = data.confianza || data.confidence;
+                const confValue = document.getElementById('confidence');
+                confValue.textContent = `${(confianza * 100).toFixed(1)}%`;
+                
+                // color segun confianza
+                if (confianza >= 0.75) {
+                    confValue.style.color = '#28a745';
+                } else if (confianza >= 0.60) {
+                    confValue.style.color = '#ffc107';
+                } else {
+                    confValue.style.color = '#dc3545';
+                }
                 
                 const recValue = document.getElementById('recommendation');
-                recValue.textContent = data.recommendation;
+                const recomendacion = data.recommendation || prediccion.toUpperCase();
+                recValue.textContent = recomendacion;
                 recValue.className = 'prediction-value ' + 
-                    (data.recommendation === 'COMPRAR' ? 'buy' : 
-                     data.recommendation === 'VENDER' ? 'sell' : 'hold');
+                    (recomendacion === 'COMPRAR' || recomendacion === 'comprar' ? 'buy' : 'sell');
+                
+                // mostrar mensaje si existe (sistema avanzado)
+                if (data.mensaje) {
+                    const messageDiv = document.createElement('div');
+                    messageDiv.style.marginTop = '15px';
+                    messageDiv.style.padding = '10px';
+                    messageDiv.style.background = '#f8f9fa';
+                    messageDiv.style.borderRadius = '5px';
+                    messageDiv.style.fontSize = '0.9em';
+                    messageDiv.textContent = data.mensaje;
+                    
+                    const resultDiv = document.getElementById('result');
+                    const existingMessage = resultDiv.querySelector('.message-box');
+                    if (existingMessage) existingMessage.remove();
+                    messageDiv.className = 'message-box';
+                    resultDiv.appendChild(messageDiv);
+                }
+                
+                // NUEVO: Mostrar horizontes temporales si existen
+                if (data.horizontes) {
+                    const h = data.horizontes;
+                    
+                    // Horizonte 1 día
+                    document.getElementById('mag1d').textContent = `${h.horizonte_1d.magnitud_esperada > 0 ? '+' : ''}${h.horizonte_1d.magnitud_esperada}%`;
+                    document.getElementById('mag1d').className = 'horizonte-magnitud ' + (h.horizonte_1d.magnitud_esperada > 0 ? 'positive' : 'negative');
+                    document.getElementById('precio1d').textContent = `Precio objetivo: $${h.horizonte_1d.precio_objetivo}`;
+                    
+                    // Horizonte 5 días
+                    document.getElementById('mag5d').textContent = `${h.horizonte_5d.magnitud_esperada > 0 ? '+' : ''}${h.horizonte_5d.magnitud_esperada}%`;
+                    document.getElementById('mag5d').className = 'horizonte-magnitud ' + (h.horizonte_5d.magnitud_esperada > 0 ? 'positive' : 'negative');
+                    document.getElementById('precio5d').textContent = `Precio objetivo: $${h.horizonte_5d.precio_objetivo}`;
+                    
+                    // Horizonte 20 días
+                    document.getElementById('mag20d').textContent = `${h.horizonte_20d.magnitud_esperada > 0 ? '+' : ''}${h.horizonte_20d.magnitud_esperada}%`;
+                    document.getElementById('mag20d').className = 'horizonte-magnitud ' + (h.horizonte_20d.magnitud_esperada > 0 ? 'positive' : 'negative');
+                    document.getElementById('precio20d').textContent = `Precio objetivo: $${h.horizonte_20d.precio_objetivo}`;
+                    
+                    document.getElementById('horizonteSection').style.display = 'block';
+                }
+                
+                // NUEVO: Mostrar recomendación de holding
+                if (data.holding_recomendacion) {
+                    document.getElementById('holdingValue').textContent = data.holding_recomendacion;
+                    document.getElementById('holdingBox').style.display = 'block';
+                }
+                
+                // NUEVO: Mostrar métricas de riesgo
+                if (data.stop_loss && data.take_profit) {
+                    document.getElementById('stopLoss').textContent = `$${data.stop_loss}`;
+                    document.getElementById('takeProfit').textContent = `$${data.take_profit}`;
+                    document.getElementById('riskReward').textContent = `1:${data.riesgo_rendimiento || 'N/A'}`;
+                    document.getElementById('riskMetrics').style.display = 'grid';
+                }
                 
                 document.getElementById('result').classList.add('show');
                 

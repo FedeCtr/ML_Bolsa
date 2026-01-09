@@ -22,12 +22,12 @@ class DataCollector:
         self.raw_dir = self.config.raw_data_dir
         os.makedirs(self.raw_dir, exist_ok=True)
     
-    def download_ticker(self, ticker: str, years: int = 5) -> Optional[pd.DataFrame]:
+    def download_ticker(self, ticker: str, period: str = '5y') -> Optional[pd.DataFrame]:
         """descarga datos de un ticker especifico"""
         try:
             logger.info(f"descargando {ticker}...")
             stock = yf.Ticker(ticker)
-            df = stock.history(period=f"{years}y", interval="1d")
+            df = stock.history(period=period, interval="1d")
             
             if df.empty:
                 logger.warning(f"sin datos para {ticker}")
