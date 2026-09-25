@@ -54,11 +54,15 @@ class TechnicalProcessor:
         return df
     
     def calculate_macd(self, df: pd.DataFrame) -> pd.DataFrame:
-        """MACD - Moving Average Convergence Divergence"""
+        """MACD normalizado por precio (estacionario). El MACD crudo escala
+        con el nivel del precio y no es comparable entre tickers ni regímenes."""
         macd = ta.trend.MACD(df['Close'])
         df['macd'] = macd.macd()
         df['macd_signal'] = macd.macd_signal()
         df['macd_diff'] = macd.macd_diff()
+        # versiones normalizadas (usar estas como features, no las crudas)
+        df['macd_norm'] = df['macd'] / df['Close']
+        df['macd_diff_norm'] = df['macd_diff'] / df['Close']
         return df
     
     def calculate_bollinger_bands(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -105,9 +109,11 @@ class TechnicalProcessor:
         return df
     
     def calculate_obv(self, df: pd.DataFrame) -> pd.DataFrame:
-        """OBV - On Balance Volume"""
+        """OBV normalizado por volumen acumulado (acotado y estacionario).
+        El OBV crudo es una suma acumulada con escala creciente."""
         df['obv'] = ta.volume.OnBalanceVolumeIndicator(df['Close'], df['Volume']).on_balance_volume()
-        df['obv_ema'] = df['obv'].ewm(span=20, adjust=False).mean()
+        vol_sum_20 = df['Volume'].rolling(20).sum()
+        df['obv_ratio_20d'] = df['obv'] / vol_sum_20
         return df
     
     def calculate_vwap(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -124,19 +130,23 @@ class TechnicalProcessor:
         return df
     
     def calculate_momentum(self, df: pd.DataFrame) -> pd.DataFrame:
-        """momentum multiples periodos"""
-        df['momentum_5'] = df['Close'] - df['Close'].shift(5)
-        df['momentum_10'] = df['Close'] - df['Close'].shift(10)
-        df['momentum_20'] = df['Close'] - df['Close'].shift(20)
+        """momentum multiples periodos, como retorno relativo (estacionario).
+        La version anterior restaba niveles de precio crudos, lo que hace la
+        feature dependiente del nivel del precio y no comparable en el tiempo."""
+        df['momentum_5'] = df['Close'].pct_change(5)
+        df['momentum_10'] = df['Close'].pct_change(10)
+        df['momentum_20'] = df['Close'].pct_change(20)
         return df
     
     def calculate_lag_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """precios pasados - lag features"""
-        df['close_lag_1'] = df['Close'].shift(1)
-        df['close_lag_2'] = df['Close'].shift(2)
-        df['close_lag_3'] = df['Close'].shift(3)
-        df['close_lag_5'] = df['Close'].shift(5)
-        df['close_lag_10'] = df['Close'].shift(10)
+        """lags de RETORNOS (estacionarios). Los lags de precio crudo
+        (close_lag_1, etc.) fueron eliminados: el modelo aprendia el nivel
+        del precio en lugar de la senal, degradando fuera de muestra."""
+        df['lag_ret_1'] = df['retorno_1d'].shift(1)
+        df['lag_ret_2'] = df['retorno_1d'].shift(2)
+        df['lag_ret_3'] = df['retorno_1d'].shift(3)
+        df['lag_ret_5'] = df['retorno_1d'].shift(5)
+        df['lag_ret_10'] = df['retorno_1d'].shift(10)
         return df
     
     def calculate_rolling_stats(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -170,8 +180,70 @@ class TechnicalProcessor:
         df['es_inicio_mes'] = (df.index.day <= 5).astype(int)
         return df
     
-    def process_all_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """calcula TODOS los indicadores - 50+ features"""
+    @staticmethod
+    def _normalize_session_index(idx: pd.Index) -> pd.Index:
+        """normaliza un indice temporal a medianoche America/New_York.
+
+        yfinance devuelve ^VIX en timezone America/Chicago y las acciones en
+        America/New_York: sin normalizar, el reindex por etiquetas nunca
+        coincide y todas las features de contexto quedarian en NaN.
+        """
+        if getattr(idx, 'tz', None) is not None:
+            idx = idx.tz_convert('America/New_York').normalize()
+        return idx
+
+    def add_market_context(
+        self,
+        df: pd.DataFrame,
+        spy_df: Optional[pd.DataFrame] = None,
+        vix_df: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        """añade features de contexto de mercado (mercado y régimen).
+
+        Todas las features usan solo informacion disponible al cierre del dia
+        (misma fecha o anterior), sin lookahead.
+        """
+        # alinear todas las series por fecha de sesion (misma tz y hora)
+        df.index = self._normalize_session_index(df.index)
+
+        if spy_df is not None and not spy_df.empty:
+            spy = spy_df.copy()
+            spy.index = self._normalize_session_index(spy.index)
+            spy_ret = spy['Close'].pct_change()
+            df['spy_ret_1d'] = spy_ret.reindex(df.index)
+            df['spy_ret_5d'] = spy['Close'].pct_change(5).reindex(df.index)
+            spy_sma20 = spy['Close'].rolling(20).mean()
+            df['spy_dist_sma_20'] = ((spy['Close'] - spy_sma20) / spy_sma20).reindex(df.index)
+            df['spy_vol_20d'] = spy_ret.rolling(20).std().reindex(df.index)
+            # correlacion rolling del ticker con el mercado (20 dias)
+            own_ret = df['Close'].pct_change()
+            df['spy_corr_20d'] = own_ret.rolling(20).corr(spy_ret.reindex(df.index))
+        
+        if vix_df is not None and not vix_df.empty:
+            vix = vix_df.copy()
+            vix.index = self._normalize_session_index(vix.index)
+            df['vix_level'] = vix['Close'].reindex(df.index)
+            # z-score del VIX sobre 60 dias: nivel de estres relativo
+            vix_mean = vix['Close'].rolling(60).mean().reindex(df.index)
+            vix_std = vix['Close'].rolling(60).std().reindex(df.index)
+            df['vix_zscore'] = (df['vix_level'] - vix_mean) / vix_std
+            df['vix_change_5d'] = vix['Close'].pct_change(5).reindex(df.index)
+        
+        return df
+    
+    def process_all_indicators(
+        self,
+        df: pd.DataFrame,
+        spy_df: Optional[pd.DataFrame] = None,
+        vix_df: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        """calcula TODOS los indicadores - 50+ features.
+        
+        Args:
+            df: OHLCV del ticker.
+            spy_df: OHLCV de SPY (opcional) para contexto de mercado.
+            vix_df: OHLCV de ^VIX (opcional) para regimen de volatilidad.
+        """
         logger.info("calculando 50+ indicadores tecnicos avanzados")
         
         df = df.copy()
@@ -202,6 +274,9 @@ class TechnicalProcessor:
         
         # temporales
         df = self.add_temporal_features(df)
+        
+        # contexto de mercado (SPY, VIX)
+        df = self.add_market_context(df, spy_df=spy_df, vix_df=vix_df)
         
         logger.info(f"indicadores calculados - total: {df.shape[1]} columnas")
         return df
