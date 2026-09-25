@@ -102,7 +102,6 @@ Motor con ejecución en la **apertura del día siguiente** (anti-lookahead), com
 - **Precisión por banda de confianza** (heatmap OOF) y **backtesting on-demand** por ticker/período con equity curve.
 
 API: `/api/screener`, `/api/signal/<ticker>`, `/api/chart/<ticker>`, `/api/backtest/<ticker>`, `/api/oof-summary`, `/api/meta` (+ `/api/predict/*` de compatibilidad).
-```
 
 ## 🚀 Instalación
 
