@@ -5,19 +5,40 @@ data:
   raw_dir: "data/raw"
   processed_dir: "data/processed"
   ml_ready_dir: "data/ml_ready"
+  reports_dir: "reports"
 
 # configuracion de modelos
 models:
   models_dir: "models"
-  default_name: "modelo_bolsa.pkl"
+  default_name: "modelo_basico"
   random_state: 42
-  test_size: 0.2
+  test_size: 0.2   # solo para el modelo basico; el ensemble usa walk-forward
 
-# parametros de RandomForest
+# parametros de RandomForest (modelo basico)
 ml:
   n_estimators: 100
   max_depth: 10
   random_state: 42
+
+# validacion temporal (anti-leakage)
+validation:
+  scheme: "walk_forward_purged"
+  n_splits: 5
+  purge_days: 60       # >= lookback maximo de features (volatilidad_60d)
+  embargo_days: 5      # buffer adicional entre train y test
+
+# calibracion de confianza
+calibration:
+  method: "isotonic"   # isotonic | platt
+  min_signals: 30      # senales OOF minimas para aceptar un umbral
+
+# costos de transaccion para backtesting (fraccion por lado)
+backtesting:
+  initial_capital: 100000
+  commission_pct: 0.0005   # 5 bps
+  spread_pct: 0.0005       # 5 bps
+  slippage_pct: 0.0005     # 5 bps
+  allow_short: false
 
 # configuracion de API
 api:
@@ -32,6 +53,11 @@ tickers:
   - "MSFT"
   - "AMZN"
   - "TSLA"
+
+# contexto de mercado
+market_context:
+  market_ticker: "SPY"
+  volatility_ticker: "^VIX"
 
 # configuracion de logging
 logging:

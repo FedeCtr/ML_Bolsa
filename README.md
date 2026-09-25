@@ -1,261 +1,176 @@
-# ML_Bolsa - Predictor Avanzado 70%+ 📈
+# ML_Bolsa — Predictor bursátil con validación honesta 📈
 
-Sistema de predicción de mercado de valores con **ensemble de 4 modelos** y **50+ features** para alcanzar **70%+ accuracy**.
+Sistema de predicción de dirección diaria con **ensemble de 4 modelos**, **50+ features estacionarias** y **validación walk-forward con purging y embargo** (sin data leakage).
 
-## 🎯 Características
+> ⚠️ **Expectativas honestas.** Con validación temporal correcta, la accuracy direccional realista para acciones líquidas en horizonte diario es **53–56%**. Los números de 70–80% que prometía la versión anterior eran producto de data leakage (split aleatorio sobre una serie temporal). Este repo reporta métricas out-of-sample verificables. Proyecto con fines educativos/de investigación: **no es asesoramiento financiero**.
 
-### Sistema Básico
-- ✅ Modelo RandomForest con 10 features → ~53% accuracy
-- ✅ API Flask funcional
-- ✅ Dashboard web
-- ✅ Jupyter notebook exploratorio
+---
 
-### Sistema Avanzado (NUEVO) 🚀
-- ✅ **4 modelos ensamblados**: XGBoost, LightGBM, RandomForest, ExtraTrees
-- ✅ **50+ features técnicas**: MACD, Bollinger, ADX, RSI, ATR, Stochastic, Williams, CCI, OBV, VWAP, lag features
-- ✅ **Optimización Optuna**: hyperparameter tuning automático
-- ✅ **Filtro de confianza >75%**: solo actúa en señales de alta confianza
-- ✅ **Objetivo: 70%+ accuracy**
+## 🔬 Metodología (qué se corrigió y por qué)
+
+### 1. Validación walk-forward con purging y embargo
+
+La versión anterior usaba `train_test_split(shuffle)` sobre una serie temporal: días consecutivos (casi idénticos) quedaban repartidos entre train y test, inflando la métrica. Ahora:
+
+- Los folds avanzan **solo hacia adelante** en el tiempo.
+- **Purge de 60 días** entre train y test: cubre el lookback máximo de las features (`volatilidad_60d`), eliminando el solape de ventanas rolling con el período de test.
+- **Embargo de 5 días** adicional de aislamiento.
+
+Ver `src/ml/cv.py`.
+
+### 2. Features estacionarias
+
+Eliminadas las features dependientes del nivel de precio (no comparables entre regímenes):
+
+| Antes (no estacionaria) | Ahora (estacionaria) |
+|---|---|
+| `close_lag_1..10` (precio crudo) | `lag_ret_1..10` (retornos) |
+| `macd`, `macd_diff` (escalan con el precio) | `macd_norm`, `macd_diff_norm` (÷ precio) |
+| `momentum_5/10/20` (diferencia de precios) | retorno relativo |
+| `obv_ema` (suma acumulada creciente) | `obv_ratio_20d` (÷ volumen 20d) |
+
+### 3. Procesamiento por-ticker
+
+Antes: `pd.concat()` de tickers crudos → los rolling windows y el `shift(-1)` del target cruzaban la frontera entre tickers. Ahora cada ticker se procesa (indicadores + target) **antes** de concatenar.
+
+### 4. Contexto de mercado
+
+Features nuevas: retornos y distancia a SMA de **SPY**, correlación rolling con el mercado, y **VIX** (nivel, z-score 60d, cambio 5d) como proxy del régimen de volatilidad.
+
+### 5. Optuna sobre CV purgada
+
+El tuning ahora evalúa cada trial con la misma validación walk-forward purgada (antes: `KFold` aleatorio → el tuning también filtraba).
+
+### 6. Calibración de confianza con datos
+
+El umbral de confianza ya no es un 75% arbitrario: se calibran las probabilidades (isotónica/Platt) sobre predicciones **out-of-fold** y se elige el umbral midiendo la **precisión real** en cada nivel. Ver `scripts/calibrate_thresholds.py`.
+
+### 7. Backtesting con costos reales
+
+Motor con ejecución en la **apertura del día siguiente** (anti-lookahead), comisión + spread + slippage configurables, métricas Sharpe/Sortino/MaxDD/Profit Factor/Win-Loss y desglose por régimen de volatilidad. Ver `src/backtesting/`.
+
+---
 
 ## 📂 Estructura
 
 ```
-prediction_api/
 ├── src/
 │   ├── data/
-│   │   ├── collector.py              - descarga datos (yfinance)
-│   │   └── processor.py              - 50+ indicadores tecnicos
+│   │   ├── collector.py            - descarga datos (yfinance)
+│   │   ├── processor.py            - 50+ indicadores estacionarios + SPY/VIX
+│   │   └── preparer.py             - datasets ML (targets por-ticker)
 │   ├── ml/
-│   │   ├── trainer.py                - modelo basico (RandomForest)
-│   │   ├── advanced_trainer.py       - ensemble 4 modelos + Optuna
-│   │   ├── predictor.py              - predictor basico
-│   │   ├── advanced_predictor.py     - predictor con filtro confianza
-│   │   └── evaluator.py              - metricas
-│   ├── api/
-│   │   ├── routes.py                 - Flask API
-│   │   └── templates/dashboard.html  - interfaz web
-│   └── utils/
-│       ├── config.py                 - configuracion
-│       └── logger.py                 - logging
+│   │   ├── cv.py                   - walk-forward purgado (serie y PANEL por fechas)
+│   │   ├── advanced_trainer.py     - ensemble 4 modelos + Optuna (CV purgada)
+│   │   ├── advanced_predictor.py   - inferencia con calibración y umbral
+│   │   ├── calibration.py          - isotónica/Platt + análisis de umbrales
+│   │   ├── signal_engine.py        - señales graduadas + TP/SL/R-R (pivotes+ATR)
+│   │   ├── screener.py             - escaneo batch con cache TTL y filtros
+│   │   ├── trainer.py / predictor.py - sistema básico (RandomForest)
+│   │   └── evaluator.py            - métricas de clasificación
+│   ├── backtesting/
+│   │   ├── engine.py               - motor con costos (ejecución t+1)
+│   │   ├── metrics.py              - Sharpe, Sortino, MaxDD, PF, Win/Loss
+│   │   └── report.py               - informe técnico markdown
+│   ├── api/                        - Flask API + dashboard
+│   └── utils/                      - config, logger
 ├── scripts/
-│   ├── train_advanced.py             - entrenar ensemble
-│   └── predict_advanced.py           - predecir con filtro
-├── notebooks/
-│   └── 01_exploracion.ipynb          - analisis + sistema avanzado
-├── data/                              - raw/processed/ml_ready
-└── models/                            - .pkl entrenados
+│   ├── train_advanced.py           - entrenamiento (sin leakage)
+│   ├── calibrate_thresholds.py     - umbral de confianza con datos
+│   ├── backtest.py                 - backtest walk-forward + informe
+│   └── ...                         - pipeline básico, API, etc.
+├── tests/                          - tests pytest (CV, features, backtest, señales)
+├── config.yaml
+└── requirements.txt
+```
+
+## 🖥️ Terminal de trading (dashboard)
+
+`python scripts/run_api.py` → http://localhost:5000 — terminal dark mode con:
+
+- **Screener**: 20 tickers escaneados con el ensemble calibrado; filtros por lado, confianza ≥60%, sector y búsqueda.
+- **Gráfico interactivo** (canvas propio, sin CDNs): velas + volumen, EMA20/50/200, Bollinger, RSI, soportes/resistencias por pivotes y **marcadores de señales OOF históricas** (opacidad = acierto).
+- **Niveles operativos**: entrada, SL, TP1/TP2/TP3 (ATR + estructura técnica), R/R y sizing por riesgo fijo — marcados como ingeniería de riesgo, no salidas del modelo.
+- **Precisión por banda de confianza** (heatmap OOF) y **backtesting on-demand** por ticker/período con equity curve.
+
+API: `/api/screener`, `/api/signal/<ticker>`, `/api/chart/<ticker>`, `/api/backtest/<ticker>`, `/api/oof-summary`, `/api/meta` (+ `/api/predict/*` de compatibilidad).
 ```
 
 ## 🚀 Instalación
 
 ```bash
-# 1. clonar
 git clone https://github.com/FedeCtr/ML_Bolsa.git
 cd ML_Bolsa
-
-# 2. crear entorno virtual
 python -m venv venv
-venv\Scripts\activate  # Windows
-
-# 3. instalar dependencias base
+venv\Scripts\activate          # Windows
 pip install -r requirements.txt
-
-# 4. instalar dependencias avanzadas
-pip install xgboost lightgbm optuna ta scikit-optimize
 ```
 
-## 📊 Uso - Sistema Básico
+Compatible con **Python 3.12/3.13** (el requirements anterior no instalaba en 3.13+).
+
+## 📊 Uso (flujo correcto, en orden)
 
 ```bash
-# entrenar modelo basico
-python run_pipeline.py
+# 1. entrenar ensemble (usa validación purgada; guarda OOF)
+python scripts/train_advanced.py --optimize --trials 50
 
-# iniciar API
-python run_api.py
+# 2. calibrar confianza y elegir umbral con datos OOF
+python scripts/calibrate_thresholds.py
 
-# dashboard: http://localhost:5000
-```
+# 3. backtest walk-forward con costos + informe markdown
+python scripts/backtest.py AAPL --period 5y
 
-## 🎯 Uso - Sistema Avanzado (70%+ accuracy)
-
-### Entrenar Ensemble
-
-```bash
-# entrenamiento basico (sin optimizacion)
-python scripts/train_advanced.py
-
-# entrenamiento optimizado con Optuna (RECOMENDADO)
-python scripts/train_advanced.py --optimize --trials 100
-
-# entrenar con mas datos
-python scripts/train_advanced.py --optimize --trials 100 --tickers AAPL MSFT GOOGL AMZN TSLA NVDA META --period 3y
-```
-
-### Predecir con Filtro de Confianza
-
-```bash
-# prediccion individual
+# 4. predecir (aplica calibración y umbral seleccionado)
 python scripts/predict_advanced.py AAPL
 
-# prediccion multiple
-python scripts/predict_advanced.py AAPL MSFT GOOGL
+# 5. API + dashboard
+python scripts/run_api.py        # http://localhost:5000
 
-# ajustar umbral de confianza
-python scripts/predict_advanced.py AAPL --confidence 0.80
+# 6. tests
+pytest tests/ -v
 ```
 
-**Ejemplo de salida:**
+## 📈 Qué esperar (y qué reportar)
+
+Resultados medidos (7 tickers tech × 5 años, panel walk-forward por fechas, purge 60d + embargo 5d):
+
+| Métrica | Valor medido | Interpretación |
+|---|---|---|
+| Directional accuracy (panel) | **49.5%** | Sin edge diario bruto en universos tech |
+| Precision banda ≥0.575 (OOF) | 87.5% (n=8) | El valor está en bandas de confianza alta; n muy pequeño |
+| Brier (calibración isotónica) | 0.287 → 0.249 | Las probabilidades mejoran claramente calibradas |
+| Backtest AAPL 3y, umbral 0.525 | −10.7%, PF 0.68 | La señal media **no** cubre costos sin filtro de confianza |
+
+⚠️ Lección clave: el split por posiciones sobre tickers concatenados infla la métrica (fuga cross-sectional: el train contiene otros tickers en las mismas fechas). Con folds por **fecha de calendario** (train = pasado de todos los tickers, test = cross-sectional), la métrica cae a su valor honesto. Ver `build_panel_walk_forward_splits`.
+
+Si el accuracy out-of-sample cae al corregir el leakage, **ese es el número real**. Cualquier cifra muy superior a ~56% en horizonte diario debe tratarse como sospechosa de filtración.
+
+## 🧪 Tests
+
+```bash
+pytest tests/ -v
 ```
-Ticker:             AAPL
-Precio actual:      $175.43
-Prediccion:         COMPRAR
-Confianza:          82.45%
-Prob. Subida:       82.45%
-Prob. Bajada:       17.55%
-Mensaje:            alta confianza (82.45%)
-```
 
-Si la confianza es <75%, retorna `no_action` para evitar señales débiles.
-## 🧠 Detalles Técnicos
+Cubren: geometría del split purgado (sin solape, purge, embargo), estacionariedad de features, motor de backtest (costos, anti-lookahead, métricas) y calibración de umbrales.
 
-### 50+ Features Técnicas
+## 🗺️ Roadmap
 
-**Momentum (8)**:
-- Retornos: 1d, 3d, 5d, 10d, 20d
-- Momentum: 5, 10, 20
+- [x] Validación walk-forward con purging/embargo
+- [x] Features estacionarias + contexto de mercado (SPY/VIX)
+- [x] Calibración de probabilidades y umbral con datos
+- [x] Backtesting con costos + informe técnico
+- [x] Terminal dark mode: screener + gráfico + niveles + heatmap OOF + backtest interactivo
+- [x] CV de panel por fechas (corrige fuga cross-sectional multi-ticker)
+- [ ] Paper trading en vivo (Alpaca Paper API)
+- [ ] Detección de drift/regímenes (Evidently + HMM)
+- [ ] Migración Flask → FastAPI + WebSocket
+- [ ] Retraining automático por degradación de métricas
+- [ ] Ampliar universo (S&P 500, forex, crypto) y features exógenas
 
-**Trend (13)**:
-- SMA: 10, 20, 50, 200
-- EMA: 12, 26
-- Distancias a SMA: 10, 20, 50
-- MACD: macd, signal, diff
-- ADX
+## ⚠️ Nota sobre "señales nulas"
 
-**Volatility (7)**:
-- Volatilidad: 5d, 10d, 20d, 60d
-- ATR, ATR %
-- Bollinger Width
-
-**Oscillators (8)**:
-- RSI
-- Stochastic: K, D
-- Williams %R
-- CCI
-- Bollinger %
-
-**Volume (4)**:
-- Volume ratio
-- Volume ROC
-- OBV EMA
-- VWAP distance
-
-**Lag Features (5)**:
-- Close lag: 1, 2, 3, 5, 10
-
-**Price Patterns (2)**:
-- Range 20d
-- Body %
-
-**Temporal (6)**:
-- Día semana, mes, trimestre, día mes
-- Fin de mes, inicio de mes
-
-### Ensemble - Pesos Optimizados
-
-- **XGBoost**: 35% - mejor para patrones complejos
-- **LightGBM**: 30% - rápido y preciso
-- **RandomForest**: 25% - estable y robusto
-- **ExtraTrees**: 10% - diversidad adicional
-
-Votación suave (probabilidades) con `VotingClassifier`.
-
-### Optimización Optuna
-
-Hiperparámetros optimizados:
-- `max_depth`: 3-10
-- `learning_rate`: 0.01-0.3
-- `n_estimators`: 100-500
-- `subsample`: 0.6-1.0
-- `colsample_bytree`: 0.6-1.0
-- Y más...
-
-### Filtro de Confianza
-
-Solo retorna señal si `confidence > 75%`, caso contrario `no_action`.
-
-Mejora la **precisión** sacrificando **recall** → menos señales pero más confiables.
-
-## 📈 Rendimiento Esperado
-
-| Sistema | Features | Modelos | Accuracy Esperado |
-|---------|----------|---------|-------------------|
-| Básico | 10 | RandomForest | ~52-55% |
-| Avanzado (sin optimizar) | 50+ | Ensemble 4 | ~60-65% |
-| **Avanzado (optimizado)** | **50+** | **Ensemble 4 + Optuna** | **70%+** |
-| Avanzado + Filtro 75% | 50+ | Ensemble 4 + Optuna | **75-80%** (señales filtradas) |
-
-*Nota: rendimiento real depende de datos de entrenamiento y condiciones de mercado*
-
-## 🔧 Tecnologías
-
-- **Python 3.14**
-- **ML**: scikit-learn, xgboost, lightgbm
-- **Optimización**: optuna, scikit-optimize
-- **Indicadores**: ta (technical analysis)
-- **Data**: yfinance, pandas, numpy
-- **API**: Flask
-- **Visualización**: matplotlib, seaborn
-
-## 🎓 Roadmap Futuro
-
-- [ ] Agregar LSTM para series temporales
-- [ ] Integrar CatBoost (requiere Python <3.14 o compilación manual)
-- [ ] Sentiment analysis con noticias
-- [ ] Walk-forward validation
-- [ ] Backtesting completo
-- [ ] API de predicción en tiempo real
+La especificación comercial pide evitar `SIN_ACCION`. La terminal lo resuelve con **señales graduadas** (`COMPRA_FUERTE`/`COMPRA`/`NEUTRAL`/`VENTA`/`VENTA_FUERTE`): ya no hay señal nula, pero la banda media es explícitamente **NEUTRAL, no operable**. Forzar señales compraventas cuando el modelo no tiene ventaja (49.5% DA) solo fabricaría actividad; la confianza de la plataforma comercial reside en mostrar cuándo NO operar.
 
 ## 📝 Licencia
 
-Proyecto educacional para aprendizaje de ML aplicado a finanzas 🚀
-
----
-
-**Creado con 🧠 para alcanzar 70%+ accuracy en predicción de acciones**
-- joblib - persistencia de modelos
-
-## Datos
-
-Los datos se guardan automaticamente en:
-- `data/raw/` - datos descargados
-- `data/processed/` - con indicadores tecnicos
-- `data/ml_ready/` - listos para entrenar
-- `models/` - modelos .pkl entrenados
-
-## Notebooks
-
-Abre `notebooks/01_exploracion.ipynb` para ver ejemplos de:
-- Descarga de datos
-- Calculo de indicadores
-- Entrenamiento de modelos
-- Visualizaciones
-- Predicciones
-
-## Config
-
-Edita `src/utils/config.py` o `config.yaml` para cambiar:
-- Tickers por defecto
-- Parametros del modelo
-- Periodos de descarga
-- Rutas de archivos
-
-## Notas
-
-- Las predicciones son solo para fines educativos
-- No usar como consejo financiero
-- El modelo necesita ser reentrenado periodicamente
-- Minimo 2 anos de datos historicos recomendado
-
-## License
-
-MIT
+MIT. Proyecto educativo — **no constituye asesoramiento financiero**.

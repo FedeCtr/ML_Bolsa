@@ -1,18 +1,27 @@
-# dependencias base
-Flask==3.0.0
-yfinance==0.2.33
-pandas==2.1.4
-numpy==1.26.2
-scikit-learn==1.3.2
-joblib==1.3.2
-PyYAML==6.0.1
-matplotlib==3.8.2
+# dependencias base (compatible con Python 3.12 / 3.13)
+# rangos >= para que pip resuelva la build compatible con tu interprete
+Flask>=3.0.0
+yfinance>=0.2.40
+pandas>=2.2.0
+numpy>=1.26.0
+scikit-learn>=1.5.0
+joblib>=1.3.2
+PyYAML>=6.0.1
+matplotlib>=3.8.2
 
-# dependencias avanzadas para 70%+ accuracy
-xgboost==3.1.2
-lightgbm==4.6.0
-optuna==4.6.0
-ta==0.11.0
-scikit-optimize==0.10.2
+# ML: ensemble + optimizacion
+xgboost>=2.1.0
+lightgbm>=4.5.0
+optuna>=4.0.0
 
-# nota: catboost requiere Python <3.14 o compilacion manual con Visual Studio 2022
+# indicadores tecnicos
+ta>=0.11.0
+
+# testing
+pytest>=8.0.0
+
+# notas:
+# - el requirements anterior fijaba numpy==1.26.2 / pandas==2.1.4, que no
+#   instalan en Python 3.13/3.14 (el README declaraba 3.14)
+# - catboost no se incluye: sin wheels para 3.13+ en el momento de auditoria
+# - para produccion en contenedor, fijar versiones exactas tras resolver
