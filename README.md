@@ -1,5 +1,10 @@
 # ML_Bolsa — Predictor bursátil con validación honesta 📈
 
+![Tests](https://github.com/FedeCtr/ML_Bolsa/actions/workflows/tests.yml/badge.svg)
+![Python](https://img.shields.io/badge/Python-3.12%20%7C%203.13-3776AB?logo=python&logoColor=white)
+![Licencia](https://img.shields.io/badge/Licencia-MIT-green)
+![Mercado](https://img.shields.io/badge/Mercado-Equities%20US-f0b90b)
+
 Sistema de predicción de dirección diaria con **ensemble de 4 modelos**, **50+ features estacionarias** y **validación walk-forward con purging y embargo** (sin data leakage).
 
 > ⚠️ **Expectativas honestas.** Con validación temporal correcta, la accuracy direccional realista para acciones líquidas en horizonte diario es **53–56%**. Los números de 70–80% que prometía la versión anterior eran producto de data leakage (split aleatorio sobre una serie temporal). Este repo reporta métricas out-of-sample verificables. Proyecto con fines educativos/de investigación: **no es asesoramiento financiero**.
@@ -87,6 +92,9 @@ Motor con ejecución en la **apertura del día siguiente** (anti-lookahead), com
 ## 🖥️ Terminal de trading (dashboard)
 
 `python scripts/run_api.py` → http://localhost:5000 — terminal dark mode con:
+
+![Terminal de trading ML_Bolsa](docs/screenshot_terminal.png)
+*Screener de 20 tickers, gráfico de velas con EMAs/Bollinger, soportes/resistencias por pivotes y marcadores de señales out-of-fold (MSFT, vista 6 meses).*
 
 - **Screener**: 20 tickers escaneados con el ensemble calibrado; filtros por lado, confianza ≥60%, sector y búsqueda.
 - **Gráfico interactivo** (canvas propio, sin CDNs): velas + volumen, EMA20/50/200, Bollinger, RSI, soportes/resistencias por pivotes y **marcadores de señales OOF históricas** (opacidad = acierto).

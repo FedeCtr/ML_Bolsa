@@ -314,7 +314,18 @@ async function loadScreener(force){
     $('sectorSel').innerHTML = '<option value="">Todos los sectores</option>' +
       sectors.map(s=>`<option value="${s}">${s}</option>`).join('');
     renderScreener();
-    if(!S.ticker && S.rows.length) selectTicker(S.rows[0].ticker);
+    // deep-linking: ?ticker=MSFT&tf=66 abre la terminal en ese estado
+    const params = new URLSearchParams(location.search);
+    const want = params.get('ticker');
+    if(!S.ticker && S.rows.length){
+      const first = (want && S.rows.some(r=>r.ticker===want)) ? want : S.rows[0].ticker;
+      selectTicker(first);
+    }
+    const tf = params.get('tf');
+    if(tf){
+      const b=[...document.querySelectorAll('#tfButtons .tf')].find(x=>x.dataset.days===tf);
+      if(b) b.click();
+    }
   }catch(e){ $('scanStatus').textContent = 'Fallo de red al escanear'; }
 }
 
