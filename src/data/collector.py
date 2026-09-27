@@ -43,6 +43,20 @@ class DataCollector:
         except Exception as e:
             logger.error(f"error descargando {ticker}: {e}")
             return None
+
+    def download_batch(self, tickers: list, period: str = '1y', max_workers: int = 8) -> dict:
+        """descarga N tickers en paralelo (para escaneos del universo)"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        out: dict = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(self.download_ticker, t, period): t for t in tickers}
+            for fut in as_completed(futures):
+                t = futures[fut]
+                df = fut.result()
+                if df is not None:
+                    out[t] = df
+        logger.info(f"batch: {len(out)}/{len(tickers)} tickers descargados")
+        return out
     
     def download_all(self, years: int = 5) -> dict:
         """descarga datos de todos los tickers"""
