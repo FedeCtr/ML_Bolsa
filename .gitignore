@@ -35,6 +35,11 @@ data/ml_ready/
 models/*.pkl
 models/*.joblib
 
+# runtime de paper trading y watchlists
+data/paper_trading.db
+data/*.db
+data/watchlists.json
+
 # logs
 logs/
 *.log
