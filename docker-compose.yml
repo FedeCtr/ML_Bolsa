@@ -1,0 +1,20 @@
+services:
+  api:
+    build: .
+    container_name: mlbolsa-api
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - app-data:/app/data        # paper trading, watchlists, cache raw
+    ports:
+      - "8000:8000"
+
+  redis:
+    image: redis:7-alpine
+    container_name: mlbolsa-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+volumes:
+  app-data:
