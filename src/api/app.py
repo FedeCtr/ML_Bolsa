@@ -4,7 +4,6 @@ aplicacion Flask principal
 from flask import Flask
 import os
 
-from .routes import register_routes
 from ..utils.logger import get_logger
 from ..utils.config import Config
 
@@ -21,6 +20,7 @@ def create_app():
     app.config['DEBUG'] = config.debug_mode
     
     # registrar rutas
+    from .routes import register_routes
     register_routes(app)
     
     logger.info("aplicacion Flask creada")

@@ -1,23 +1,28 @@
 """
-endpoints de la API
+endpoints de la API (v2 comercial)
 
-Endpoints originales (predict, batch, recommendation) + nuevos para la
-plataforma comercial: screener, senal por niveles, chart, backtest y
-resumen OOF (heatmap de precision historica).
+Nuevos (spec 2-5): /api/scan (jobs), /api/top-signals, /api/watchlists,
+/api/paper/*, /api/model-performance, /api/universe/info.
+Originales mantenidos: /api/signal, /api/chart, /api/backtest, /api/predict.
 """
 import os
 from datetime import datetime
-from typing import Optional
 
 import joblib
 import numpy as np
-import pandas as pd
 from flask import jsonify, render_template, request
 
 from ..ml.predictor import StockPredictor
 from ..ml.advanced_predictor import AdvancedPredictor
 from ..ml.signal_engine import SIDE_BUY, SIDE_SELL, build_signal
-from ..ml.screener import DEFAULT_UNIVERSE, SECTORS, MarketScreener, rows_to_signal_rows
+from ..ml.screener import (UNIVERSES, apply_filters, last_results,
+                           scan_status, start_scan)
+from ..ml.watchlist import WatchlistStore
+from ..trading.paper import PaperTrader
+from ..data.collector import DataCollector
+from ..data.processor import TechnicalProcessor
+from ..data.universe import (FALLBACK_TICKERS, get_name_map, get_sector_map,
+                             get_universe)
 from ..backtesting.engine import run_walk_forward_backtest
 from ..utils.logger import get_logger
 from ..utils.config import Config
@@ -26,7 +31,7 @@ logger = get_logger(__name__)
 
 
 def _clean_nan(obj):
-    """convierte NaN/inf a None recursivamente para JSON valido"""
+    """NaN/inf -> None recursivamente (JSON valido)"""
     if isinstance(obj, dict):
         return {k: _clean_nan(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -42,12 +47,10 @@ def _clean_nan(obj):
 def register_routes(app):
     """registra todos los endpoints"""
 
-    # ------------------------------------------------------------------
-    # modelos (inicializacion unica al arrancar)
-    # ------------------------------------------------------------------
     predictor = None
     advanced_predictor = None
-    screener = MarketScreener(cache_ttl_seconds=300)
+    watchlists = WatchlistStore()
+    paper = PaperTrader()
 
     config = Config()
     advanced_model_path = os.path.join(config.models_dir, 'advanced_ensemble.pkl')
@@ -58,32 +61,26 @@ def register_routes(app):
             logger.info("predictor AVANZADO inicializado (ensemble + calibracion)")
         except Exception as e:
             logger.warning(f"no se pudo cargar predictor avanzado: {e}")
-
     if advanced_predictor is None:
         try:
             predictor = StockPredictor()
         except Exception:
             predictor = None
-            logger.warning("no se pudo cargar predictor")
 
     def _download_with_context(collector, processor, ticker, period):
-        """descarga un ticker + contexto de mercado (SPY/VIX)"""
         df = collector.download_ticker(ticker, period)
         if df is None or df.empty:
             return None
         spy = collector.download_ticker('SPY', period)
         vix = collector.download_ticker('^VIX', period)
-        return processor.process_all_indicators(df, spy_df=spy, vix_df=vix)
+        return processor.process_all_indicators(df, spy_df=spy, vix_df=vix), vix
 
     def _load_oof():
-        """carga OOF si existe (con o sin fechas/ticker)"""
         path = os.path.join(config.models_dir, 'advanced_oof.pkl')
         if not os.path.exists(path):
             return None
         data = joblib.load(path)
-        if data.get('dates') is None:
-            return None
-        return data
+        return data if data.get('dates') else None
 
     # ------------------------------------------------------------------
     # paginas
@@ -95,84 +92,129 @@ def register_routes(app):
 
     @app.route('/health')
     def health():
-        model_type = 'advanced' if advanced_predictor else ('basic' if predictor else 'none')
-        model_loaded = advanced_predictor is not None or (predictor is not None and predictor.trainer.model is not None)
         return jsonify(_clean_nan({
             'status': 'healthy',
             'timestamp': datetime.now().isoformat(),
-            'model_type': model_type,
-            'model_loaded': model_loaded,
+            'model_type': 'advanced' if advanced_predictor else ('basic' if predictor else 'none'),
+            'model_loaded': advanced_predictor is not None or predictor is not None,
+            'scan': scan_status(),
         }))
 
     # ------------------------------------------------------------------
-    # meta: info del modelo para el header del dashboard
+    # escaneo del universo (jobs en segundo plano)
     # ------------------------------------------------------------------
 
-    @app.route('/api/meta')
-    def api_meta():
-        meta = {}
-        meta_path = os.path.join(config.models_dir, 'advanced_metadata.pkl')
-        if os.path.exists(meta_path):
-            meta = joblib.load(meta_path)
-        calib_threshold = None
-        calib_path = os.path.join(config.models_dir, 'calibration.pkl')
-        if os.path.exists(calib_path):
-            calib_threshold = joblib.load(calib_path).get('selected_threshold')
-        wf = meta.get('walk_forward_metrics', {}) if meta else {}
+    @app.route('/api/scan', methods=['POST', 'GET'])
+    def api_scan():
+        if advanced_predictor is None:
+            return jsonify({'error': 'modelo no disponible'}), 400
+        body = request.get_json(silent=True) or {}
+        universe = body.get('universe', request.args.get('universe', 'mega'))
+        force = bool(body.get('force', request.args.get('force') == '1'))
+        period = body.get('period', request.args.get('period', '3mo'))
+        res = start_scan(advanced_predictor, universe=universe, period=period, force=force)
         return jsonify(_clean_nan({
-            'model_type': 'advanced' if advanced_predictor else 'basic',
-            'calibrated': advanced_predictor is not None and advanced_predictor.calibrator is not None,
-            'signal_threshold': calib_threshold if calib_threshold is not None
-            else (advanced_predictor.confidence_threshold if advanced_predictor else None),
-            'trained_at': meta.get('trained_at') if meta else None,
-            'tickers': meta.get('tickers') if meta else [],
-            'data_range': [meta.get('data_start'), meta.get('data_end')] if meta else None,
-            'walk_forward': wf,
-            'universe': DEFAULT_UNIVERSE,
+            'job_id': res['job_id'],
+            'started': res['started'],
+            'status': res['status'],
+            'n_results': len(res['results']),
+            'results': res['results'][:20] if res['results'] else [],
         }))
 
-    # ------------------------------------------------------------------
-    # screener: escaneo del universo con filtros
-    # ------------------------------------------------------------------
+    @app.route('/api/scan/status')
+    def api_scan_status():
+        st = scan_status()
+        out = {'status': st, 'n_results': len(last_results())}
+        if not st['running'] and last_results():
+            preview = apply_filters(last_results(), limit=10)
+            out['preview'] = preview
+        return jsonify(_clean_nan(out))
 
     @app.route('/api/screener')
     def api_screener():
-        if advanced_predictor is None:
-            return jsonify({'error': 'modelo no disponible'}), 400
-
-        side = request.args.get('side')            # largo | corto
-        min_conf = request.args.get('min_confidence', type=float)
-        sector = request.args.get('sector')
-        max_atr = request.args.get('max_atr_pct', type=float)
-        min_atr = request.args.get('min_atr_pct', type=float)
-        limit = request.args.get('limit', type=int)
-        force = request.args.get('force', '0') == '1'
-
-        if force:
-            screener._cache, screener._cache_ts = {}, 0.0
-
-        raw = screener.scan(universe=DEFAULT_UNIVERSE)
-        rows = rows_to_signal_rows(raw, advanced_predictor)
-        filtered = MarketScreener.apply_filters(
-            rows, side=side, min_confidence=min_conf, max_atr_pct=max_atr,
-            min_atr_pct=min_atr, sector=sector,
+        """resultados del ultimo escaneo con filtros (requiere scan previo)"""
+        rows = last_results()
+        if not rows:
+            return jsonify({'error': 'no hay escaneo; lanza POST /api/scan', 'status': scan_status()}), 409
+        f = request.args
+        filtered = apply_filters(
+            rows,
+            side=f.get('side'),
+            signal=f.get('signal'),
+            min_confidence=f.get('min_confidence', type=float),
+            min_conviction=f.get('min_conviction', type=float),
+            max_atr_pct=f.get('max_atr_pct', type=float),
+            min_volume_ratio=f.get('min_volume_ratio', type=float),
+            sector=f.get('sector'),
+            watchlist=watchlists.get(f['watchlist'])['tickers'] if f.get('watchlist') else None,
+            only_tradable=f.get('only_tradable') == '1',
+            limit=f.get('limit', type=int),
         )
-        if limit:
-            filtered = filtered[:limit]
-
         return jsonify(_clean_nan({
+            'status': scan_status(),
             'total_scanned': len(rows),
             'total_returned': len(filtered),
             'buy_count': sum(1 for r in rows if r.get('side') == SIDE_BUY),
             'sell_count': sum(1 for r in rows if r.get('side') == SIDE_SELL),
-            'sectors': sorted(set(SECTORS.values())),
+            'suspended_count': sum(1 for r in rows if not r.get('trading_allowed', True)),
             'results': filtered,
-            'cached': bool(screener._cache),
-            'timestamp': datetime.now().isoformat(),
+        }))
+
+    @app.route('/api/top-signals')
+    def api_top_signals():
+        """panel: senales activas de alta probabilidad (spec 4)"""
+        rows = last_results()
+        if not rows:
+            return jsonify({'available': False, 'reason': 'lanza un escaneo', 'status': scan_status()})
+        tradable = [r for r in rows if r.get('trading_allowed', True)]
+        top = sorted(tradable, key=lambda r: r.get('conviction_pct', 0), reverse=True)[:10]
+        return jsonify(_clean_nan({
+            'available': True,
+            'signals': top,
+            'buy_count': sum(1 for r in tradable if r.get('side') == SIDE_BUY),
+            'sell_count': sum(1 for r in tradable if r.get('side') == SIDE_SELL),
         }))
 
     # ------------------------------------------------------------------
-    # senal operable por niveles para un ticker
+    # watchlists
+    # ------------------------------------------------------------------
+
+    @app.route('/api/watchlists', methods=['GET', 'POST'])
+    def api_watchlists():
+        if request.method == 'GET':
+            return jsonify({'watchlists': watchlists.list()})
+        body = request.get_json(silent=True) or {}
+        name = (body.get('name') or '').strip()
+        if not name:
+            return jsonify({'error': 'name requerido'}), 400
+        try:
+            wl = watchlists.create(name, body.get('tickers'))
+            return jsonify(wl), 201
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 409
+
+    @app.route('/api/watchlists/<name>', methods=['GET', 'DELETE'])
+    def api_watchlist(name):
+        if request.method == 'GET':
+            wl = watchlists.get(name)
+            return jsonify(wl) if wl else (jsonify({'error': 'no existe'}), 404)
+        return jsonify({'deleted': watchlists.delete(name)})
+
+    @app.route('/api/watchlists/<name>/tickers', methods=['POST', 'DELETE'])
+    def api_watchlist_tickers(name):
+        body = request.get_json(silent=True) or {}
+        tickers = [t for t in body.get('tickers', []) if t.strip()]
+        if not tickers:
+            return jsonify({'error': 'tickers requerido'}), 400
+        try:
+            wl = (watchlists.add_tickers(name, tickers) if request.method == 'POST'
+                  else watchlists.remove_tickers(name, tickers))
+            return jsonify(wl)
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 404
+
+    # ------------------------------------------------------------------
+    # senal individual + chart + backtest (con regimen)
     # ------------------------------------------------------------------
 
     @app.route('/api/signal/<ticker>')
@@ -180,58 +222,54 @@ def register_routes(app):
         if advanced_predictor is None:
             return jsonify({'error': 'modelo no disponible'}), 400
         try:
-            from ..data.collector import DataCollector
-            from ..data.processor import TechnicalProcessor
-
-            collector = DataCollector()
-            processor = TechnicalProcessor()
+            collector, processor = DataCollector(), TechnicalProcessor()
             period = request.args.get('period', '1y')
-            df = _download_with_context(collector, processor, ticker.upper(), period)
-            if df is None:
+            res = _download_with_context(collector, processor, ticker.upper(), period)
+            if res is None:
                 return jsonify({'error': f'sin datos para {ticker}'}), 404
-
+            df, vix = res
             X = df[advanced_predictor.feature_cols].tail(1)
             if X.isna().any(axis=1).iloc[0]:
                 return jsonify({'error': 'datos insuficientes'}), 400
 
+            from ..ml.regime import detect_regime
             prob_up = advanced_predictor._raw_probability_up(X)
-            sig = build_signal(ticker.upper(), df, prob_up, as_of=str(df.index[-1].date()))
+            regime = detect_regime(df, vix_series=vix['Close'] if vix is not None else None)
+            sig = build_signal(ticker.upper(), df, prob_up,
+                               as_of=str(df.index[-1].date()), regime=regime)
             payload = sig.to_dict()
-            payload['sector'] = SECTORS.get(ticker.upper(), 'Otros')
+            payload['sector'] = get_sector_map().get(ticker.upper(), 'Otros')
+            payload['name'] = get_name_map().get(ticker.upper(), ticker.upper())
             payload['levels_nature'] = 'riesgo_determinista_no_modelo'
+
+            # registro automatico en paper trading
+            sig_id = paper.record_signal(payload)
+            payload['paper_signal_id'] = sig_id
             return jsonify(_clean_nan(payload))
         except Exception as e:
             logger.error(f"error en signal {ticker}: {e}")
             return jsonify({'error': str(e)}), 500
-
-    # ------------------------------------------------------------------
-    # chart: OHLCV + indicadores + niveles + senales OOF historicas
-    # ------------------------------------------------------------------
 
     @app.route('/api/chart/<ticker>')
     def api_chart(ticker):
         if advanced_predictor is None:
             return jsonify({'error': 'modelo no disponible'}), 400
         try:
-            from ..data.collector import DataCollector
-            from ..data.processor import TechnicalProcessor
-
-            collector = DataCollector()
-            processor = TechnicalProcessor()
+            import pandas as pd
+            collector, processor = DataCollector(), TechnicalProcessor()
             period = request.args.get('period', '2y')
             days = request.args.get('days', 260, type=int)
-            df = _download_with_context(collector, processor, ticker.upper(), period)
-            if df is None:
+            df = collector.download_ticker(ticker.upper(), period)
+            if df is None or df.empty:
                 return jsonify({'error': f'sin datos para {ticker}'}), 404
+            spy = collector.download_ticker('SPY', period)
+            vix = collector.download_ticker('^VIX', period)
+            df = processor.process_all_indicators(df, spy_df=spy, vix_df=vix).tail(days)
 
-            df = df.tail(days)
-            # EMAs y Bollinger para overlay
             out = pd.DataFrame(index=df.index.astype(str))
             out['time'] = [str(d.date()) for d in df.index]
-            out['open'] = df['Open'].round(2).values
-            out['high'] = df['High'].round(2).values
-            out['low'] = df['Low'].round(2).values
-            out['close'] = df['Close'].round(2).values
+            for c in ('open', 'high', 'low', 'close'):
+                out[c] = df[c.capitalize()].round(2).values
             out['volume'] = df['Volume'].values
             if len(df) > 210:
                 out['ema20'] = df['Close'].ewm(span=20, adjust=False).mean().round(2).values
@@ -245,16 +283,12 @@ def register_routes(app):
             out['macd'] = df['macd'].round(3).values if 'macd' in df.columns else None
             out['macd_signal'] = df['macd_signal'].round(3).values if 'macd_signal' in df.columns else None
 
-            # niveles tecnicos (pivotes) para superponer:
-            # los 4 de cada lado MAS CERCANOS al precio actual (los pivotes
-            # lejanos tras una tendencia larga son ruido visual)
             from ..ml.signal_engine import find_pivot_levels
             all_sup, all_res = find_pivot_levels(df['High'], df['Low'])
             last_px = float(df['Close'].iloc[-1])
             supports = sorted(all_sup, key=lambda v: abs(v - last_px))[:4]
             resistances = sorted(all_res, key=lambda v: abs(v - last_px))[:4]
 
-            # senales OOF historicas de este ticker (para heatmap/marcadores)
             oof = _load_oof()
             oof_signals = []
             if oof is not None:
@@ -262,9 +296,8 @@ def register_routes(app):
                                       oof['probabilities'], oof['targets']):
                     if t == ticker.upper():
                         oof_signals.append({
-                            'date': d,
-                            'prob_up': round(float(p), 4),
-                            'signal': 'COMPRA' if p >= 0.55 else ('VENTA' if p <= 0.45 else 'NEUTRAL'),
+                            'date': d, 'prob_up': round(float(p), 4),
+                            'signal': 'COMPRA' if p >= 0.5 else 'VENTA',
                             'actual_up': int(y),
                             'correct': int((p >= 0.5) == bool(y)),
                         })
@@ -280,32 +313,23 @@ def register_routes(app):
             logger.error(f"error en chart {ticker}: {e}")
             return jsonify({'error': str(e)}), 500
 
-    # ------------------------------------------------------------------
-    # backtest on-demand por ticker
-    # ------------------------------------------------------------------
-
     @app.route('/api/backtest/<ticker>')
     def api_backtest(ticker):
         if advanced_predictor is None:
             return jsonify({'error': 'modelo no disponible'}), 400
         try:
-            from ..data.collector import DataCollector
-            from ..data.processor import TechnicalProcessor
-            from ..ml.advanced_trainer import DEFAULT_FEATURE_COLS
-
             period = request.args.get('period', '3y')
-            threshold = request.args.get('threshold', type=float)
-            if threshold is None:
-                threshold = advanced_predictor.confidence_threshold or 0.5
-
-            collector = DataCollector()
-            processor = TechnicalProcessor()
-            df = _download_with_context(collector, processor, ticker.upper(), period)
-            if df is None:
+            threshold = request.args.get('threshold', type=float) \
+                or advanced_predictor.confidence_threshold or 0.5
+            collector, processor = DataCollector(), TechnicalProcessor()
+            res = _download_with_context(collector, processor, ticker.upper(), period)
+            if res is None:
                 return jsonify({'error': f'sin datos para {ticker}'}), 404
+            df, _ = res
             df['target_direccion'] = (df['Close'].shift(-1) > df['Close']).astype(int)
 
             from lightgbm import LGBMClassifier
+            from ..ml.advanced_trainer import DEFAULT_FEATURE_COLS
 
             def factory(X_tr, y_tr):
                 m = LGBMClassifier(n_estimators=200, max_depth=6, learning_rate=0.1,
@@ -319,11 +343,9 @@ def register_routes(app):
                 ticker=ticker.upper(), threshold=threshold,
             )
             result = results['walk_forward']
-
             equity = result.portfolio[['equity']].copy()
             equity['time'] = [str(d.date()) for d in equity.index]
             equity['value'] = equity['equity'].round(2).values
-
             return jsonify(_clean_nan({
                 'ticker': ticker.upper(),
                 'threshold_used': round(threshold, 3),
@@ -338,101 +360,113 @@ def register_routes(app):
             return jsonify({'error': str(e)}), 500
 
     # ------------------------------------------------------------------
-    # resumen OOF global: heatmap de precision por banda de probabilidad
+    # paper trading (forward testing, spec 5)
     # ------------------------------------------------------------------
 
-    @app.route('/api/oof-summary')
-    def api_oof_summary():
+    @app.route('/api/paper/resolve', methods=['POST'])
+    def api_paper_resolve():
+        def provider(t):
+            df = DataCollector().download_ticker(t, '1y')
+            return df
+        n = paper.resolve_pending(provider)
+        return jsonify({'resolved': n, 'performance': paper.performance()})
+
+    @app.route('/api/paper/performance')
+    def api_paper_performance():
+        return jsonify(_clean_nan(paper.performance()))
+
+    @app.route('/api/paper/signals')
+    def api_paper_signals():
+        return jsonify(_clean_nan({'signals': paper.list_signals(
+            limit=request.args.get('limit', 100, type=int))}))
+
+    # ------------------------------------------------------------------
+    # rendimiento historico del modelo (OOF) y meta
+    # ------------------------------------------------------------------
+
+    @app.route('/api/model-performance')
+    def api_model_performance():
         oof = _load_oof()
         if oof is None:
             return jsonify({'available': False,
-                            'reason': 'reentrena el modelo para generar OOF con fechas'})
+                            'reason': 'reentrena para generar OOF con fechas'})
         probs = np.asarray(oof['probabilities'])
         targets = np.asarray(oof['targets'])
         edges = [0.0, 0.35, 0.45, 0.55, 0.65, 1.0]
         labels = ['<=35%', '35-45%', '45-55%', '55-65%', '>=65%']
+        import pandas as pd
         bins = pd.cut(probs, bins=edges, labels=labels, include_lowest=True)
-        summary = []
+        bands = []
         for label in labels:
             mask = bins == label
             n = int(mask.sum())
             if n:
-                # precision del lado anunciado en esa banda:
-                # bandas de venta (prob baja) aciertan cuando target==0
                 band = targets[mask]
-                if label in ('<=35%', '35-45%'):
-                    acc = float((band == 0).mean())
-                else:
-                    acc = float(band.mean())
-                summary.append({
-                    'band': label, 'n': n, 'accuracy': round(acc, 4),
-                    'share': round(n / len(probs), 4),
-                })
-        overall_acc = float(((probs >= 0.5).astype(int) == targets).mean())
+                acc = float((band == 0).mean()) if label in ('<=35%', '35-45%') else float(band.mean())
+                bands.append({'band': label, 'n': n, 'accuracy': round(acc, 4),
+                              'share': round(n / len(probs), 4)})
+        overall = float(((probs >= 0.5).astype(int) == targets).mean())
+        meta_path = os.path.join(config.models_dir, 'advanced_metadata.pkl')
+        meta = joblib.load(meta_path) if os.path.exists(meta_path) else {}
         return jsonify(_clean_nan({
             'available': True,
             'n_samples': int(len(probs)),
-            'overall_accuracy': round(overall_acc, 4),
-            'bands': summary,
+            'overall_accuracy': round(overall, 4),
+            'bands': bands,
             'range': [oof['dates'][0], oof['dates'][-1]],
+            'trained_at': meta.get('trained_at'),
+            'walk_forward': meta.get('walk_forward_metrics'),
         }))
 
+    @app.route('/api/meta')
+    def api_meta():
+        meta_path = os.path.join(config.models_dir, 'advanced_metadata.pkl')
+        meta = joblib.load(meta_path) if os.path.exists(meta_path) else {}
+        calib_threshold = None
+        calib_path = os.path.join(config.models_dir, 'calibration.pkl')
+        if os.path.exists(calib_path):
+            calib_threshold = joblib.load(calib_path).get('selected_threshold')
+        return jsonify(_clean_nan({
+            'model_type': 'advanced' if advanced_predictor else 'basic',
+            'calibrated': advanced_predictor is not None and advanced_predictor.calibrator is not None,
+            'signal_threshold': calib_threshold if calib_threshold is not None
+            else (advanced_predictor.confidence_threshold if advanced_predictor else None),
+            'trained_at': meta.get('trained_at'),
+            'walk_forward': meta.get('walk_forward_metrics', {}),
+            'universes': {k: len(v) if v else 500 for k, v in UNIVERSES.items()},
+        }))
+
+    @app.route('/api/universe/info')
+    def api_universe_info():
+        try:
+            tickers = get_universe(limit=500)
+            return jsonify({'total': len(tickers), 'sample': tickers[:25],
+                            'sectors': sorted(set(get_sector_map().values()))})
+        except Exception as e:
+            return jsonify({'error': str(e), 'fallback_size': len(FALLBACK_TICKERS)}), 500
+
     # ------------------------------------------------------------------
-    # endpoints originales (compatibilidad)
+    # compatibilidad
     # ------------------------------------------------------------------
 
     @app.route('/api/predict/<ticker>', methods=['GET'])
     def predict_ticker(ticker):
-        active_predictor = advanced_predictor if advanced_predictor else predictor
-        if active_predictor is None:
-            return jsonify({
-                'error': 'modelo no disponible',
-                'message': 'entrena el modelo primero con: python scripts/train_advanced.py'
-            }), 400
+        active = advanced_predictor or predictor
+        if active is None:
+            return jsonify({'error': 'modelo no disponible',
+                            'message': 'entrena: python scripts/train_advanced.py'}), 400
         try:
-            resultado = active_predictor.predict_ticker(ticker.upper())
+            resultado = active.predict_ticker(ticker.upper())
             if resultado is None or 'error' in resultado:
-                return jsonify({
-                    'error': resultado.get('error', 'no se pudo predecir'),
-                    'ticker': ticker
-                }), 404
+                return jsonify({'error': resultado.get('error', 'sin datos'),
+                                'ticker': ticker}), 404
             resultado['model_type'] = 'advanced' if advanced_predictor else 'basic'
             resultado['timestamp'] = datetime.now().isoformat()
             if 'recommendation' not in resultado and 'prediccion' in resultado:
                 resultado['recommendation'] = resultado['prediccion'].upper()
             return jsonify(_clean_nan(resultado))
         except Exception as e:
-            logger.error(f"error en predict: {e}")
             return jsonify({'error': str(e)}), 500
-
-    @app.route('/api/predict/batch', methods=['POST'])
-    def predict_batch():
-        active_predictor = advanced_predictor if advanced_predictor else predictor
-        if active_predictor is None:
-            return jsonify({'error': 'modelo no disponible'}), 400
-        data = request.get_json()
-        tickers = data.get('tickers', [])
-        if not tickers:
-            return jsonify({'error': 'no se proporcionaron tickers'}), 400
-        resultados = active_predictor.predict_multiple([t.upper() for t in tickers])
-        return jsonify(_clean_nan({
-            'resultados': resultados.to_dict('records') if hasattr(resultados, 'to_dict') else resultados,
-            'model_type': 'advanced' if advanced_predictor else 'basic',
-            'timestamp': datetime.now().isoformat()
-        }))
-
-    @app.route('/api/recommendation/<ticker>', methods=['GET'])
-    def get_recommendation(ticker):
-        if predictor is None:
-            return jsonify({'error': 'modelo no disponible'}), 400
-        recomendacion = predictor.get_recommendation(ticker.upper())
-        if recomendacion is None:
-            return jsonify({'error': 'no se pudo obtener recomendacion'}), 404
-        return jsonify({
-            'ticker': ticker.upper(),
-            'recomendacion': recomendacion,
-            'timestamp': datetime.now().isoformat()
-        })
 
     @app.errorhandler(404)
     def not_found(error):
