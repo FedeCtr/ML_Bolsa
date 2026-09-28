@@ -32,6 +32,7 @@ wheels/
 data/raw/
 data/processed/
 data/ml_ready/
+data/raw_sp500/
 models/*.pkl
 models/*.joblib
 
