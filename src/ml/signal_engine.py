@@ -12,8 +12,9 @@ La categoria FUERTE exige margen >= SIGNAL_STRONG_MARGIN (0.55/0.45).
 
 Niveles operativos (ingenieria de riesgo determinista, no salidas del
 modelo): soportes/resistencias por pivotes, SL bajo/ sobre el nivel con
-buffer ATR, TP1/TP2 por multiples de ATR capados por estructura, R/R y
-sizing por riesgo fijo.
+buffer ATR, TP1 = max(1xATR, 1R) capado por estructura y TP2 =
+max(2xATR, 2R) SIN capado — el contrato del producto es R/R >= 1:2 siempre.
+Sizing por riesgo fijo.
 
 Integracion con el detector de regimen (regime.py): si el regimen esta en
 caution el sizing se escala 0.5x; si esta suspended, la senal se EMITE pero
@@ -146,15 +147,17 @@ def build_levels(
     side: str,
     atr_value: float,
     price: float,
-    risk_reward_min: float = 1.5,
+    risk_reward_min: float = 2.0,
 ) -> Dict:
     """
-    construye entrada, SL y TPs para el lado indicado.
+    construye entrada, SL y TPs para el lado indicado con R/R GARANTIZADO.
 
     Reglas (largo; el corto es el espejo):
       - SL: bajo el soporte mas cercano, buffer 0.5*ATR. Fallback 1.5*ATR.
-      - TP1/TP2: 1x / 2x ATR, capados al techo/suelo tecnico si corta antes.
-      - R/R hasta TP2; si < risk_reward_min se notifica (no se falsea).
+      - TP1: max(1xATR, 1xriesgo), capado al techo tecnico si corta antes.
+      - TP2: max(2xATR, 2xriesgo) SIN capado estructural: el objetivo del
+        producto es R/R >= risk_reward_min (1:2) SIEMPRE. Si una resistencia
+        queda antes, se notifica pero el nivel no se recorta.
     """
     if atr_value <= 0 or not np.isfinite(atr_value):
         return {'entry': None, 'stop_loss': None, 'take_profits': [],
@@ -167,27 +170,42 @@ def build_levels(
         below = [s for s in supports if s < price]
         sl = max(below) - 0.5 * atr_value if below else price - 1.5 * atr_value
         entry = price
-        targets_raw = [entry + k * atr_value for k in (1.0, 2.0)]
+        offsets = [max(1.0 * atr_value, 1.0 * abs(entry - sl)),
+                   max(2.0 * atr_value, 2.0 * abs(entry - sl))]
+        targets_raw = [entry + d for d in offsets]
         ceilings = [r for r in resistances if r > entry]
     else:
         above = [r for r in resistances if r > price]
         sl = min(above) + 0.5 * atr_value if above else price + 1.5 * atr_value
         entry = price
-        targets_raw = [entry - k * atr_value for k in (1.0, 2.0)]
+        offsets = [max(1.0 * atr_value, 1.0 * abs(entry - sl)),
+                   max(2.0 * atr_value, 2.0 * abs(entry - sl))]
+        targets_raw = [entry - d for d in offsets]
         ceilings = [s for s in supports if s < entry]
 
     sign = 1.0 if side == SIDE_BUY else -1.0
+    risk = abs(entry - sl)
 
     notes: List[str] = []
     tps: List[Dict] = []
     for i, raw in enumerate(targets_raw, start=1):
-        ceilings_before = [c for c in ceilings if sign * (c - entry) > 0 and sign * (c - raw) < 0]
-        capped = min(ceilings_before, key=lambda c: abs(c - raw)) if ceilings_before else None
-        level = raw
-        if capped is not None and i == 1 and sign * (capped - raw) < 0:
-            level = capped
-            notes.append(f"TP{i} capado por nivel tecnico ({capped:.2f})")
-        risk = abs(entry - sl)
+        if i == 1:
+            # TP1 conservador: si el techo tecnico corta antes del objetivo,
+            # se recorta (sale antes, aunque el R/R parcial baje de 1)
+            ceilings_before = [c for c in ceilings if 0 < sign * (c - entry) < sign * (raw - entry)]
+            level = min(ceilings_before, key=lambda c: abs(c - raw)) if ceilings_before else raw
+            if level != raw:
+                notes.append(f"TP{i} capado por nivel tecnico ({level:.2f})")
+        else:
+            # TP2 agresivo: sin recorte estructural, R/R minimo garantizado
+            level = raw
+            structures_before = [c for c in ceilings if 0 < sign * (c - entry) < sign * (raw - entry)]
+            if structures_before:
+                nearest = min(structures_before, key=lambda c: abs(c - entry))
+                notes.append(
+                    f"nivel tecnico {nearest:.2f} antes de TP{i}: el R/R "
+                    f"{risk_reward_min:.1f}:1 se prioriza sobre la estructura"
+                )
         reward = abs(level - entry)
         tps.append({
             'name': f'TP{i}',
@@ -199,14 +217,15 @@ def build_levels(
     seen = set()
     tps = [t for t in tps if not (t['price'] in seen or seen.add(t['price']))]
 
-    risk = abs(entry - sl)
-    tp2 = tps[-1]['price'] if tps else entry
-    rr = abs(tp2 - entry) / risk if risk > 0 else None
-    if rr is not None and rr < risk_reward_min:
-        notes.append(
-            f"R/R estructural {rr:.2f} < {risk_reward_min}: operar solo con "
-            "conviccion alta y sizing reducido"
-        )
+    rr = abs(tps[-1]['price'] - entry) / risk if risk > 0 and tps else None
+    if rr is not None and rr + 1e-9 < risk_reward_min:
+        # no deberia ocurrir con TP2 = 2xriesgo; redondeo de niveles podria
+        # dejarlo en 1.99 -> se fuerza el nivel para cumplir el contrato
+        raw2 = entry + sign * (risk_reward_min * risk)
+        tps[-1]['price'] = round(raw2, 2)
+        tps[-1]['move_pct'] = round(sign * (raw2 - entry) / entry * 100, 2)
+        tps[-1]['rr'] = round(risk_reward_min, 2)
+        rr = risk_reward_min
 
     risk_pct = risk / entry
     position_size_pct = min(100.0, 0.01 / risk_pct * 100) if risk_pct > 0 else None

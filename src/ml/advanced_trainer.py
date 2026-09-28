@@ -85,6 +85,7 @@ class AdvancedEnsemble:
         self.oof_targets: Optional[np.ndarray] = None
         self.oof_dates: List = []
         self.oof_tickers: List = []
+        self._kept_positions: Optional[np.ndarray] = None
 
     @staticmethod
     def get_feature_columns() -> List[str]:
@@ -133,6 +134,9 @@ class AdvancedEnsemble:
         X = X.replace([np.inf, -np.inf], np.nan)
         mask = ~(X.isna().any(axis=1) | y.isna())
         mask_arr = mask.to_numpy()
+        # posiciones (en df) de las filas conservadas, en el mismo orden que X.
+        # Necesario para alinear ticker/fechas con las predicciones OOF.
+        self._kept_positions = np.flatnonzero(mask_arr)
         X = X.loc[mask_arr]
         y = y.loc[mask_arr]
 
@@ -304,15 +308,22 @@ class AdvancedEnsemble:
         logger.info("\n--- FASE 2: EVALUACION WALK-FORWARD PURGADA ---")
 
         def make_models():
+            # class_weight='balanced' compensa el desbalance de clases SIN
+            # generar muestras sinteticas (SMOTE queda prohibido aqui: puede
+            # filtrar informacion a traves de fronteras temporales).
+            # XGBoost no soporta class_weight nativo -> scale_pos_weight.
+            n_pos = max(int((y_tr == 1).sum()), 1)
+            n_neg = max(int((y_tr == 0).sum()), 1)
+            spw = n_neg / n_pos
             return [
-                ('xgboost', XGBClassifier(**xgb_params)),
-                ('lightgbm', LGBMClassifier(**lgb_params)),
+                ('xgboost', XGBClassifier(**{**xgb_params, 'scale_pos_weight': spw})),
+                ('lightgbm', LGBMClassifier(**{**lgb_params, 'class_weight': 'balanced'})),
                 ('random_forest', RandomForestClassifier(
-                    n_estimators=200, max_depth=10,
+                    n_estimators=200, max_depth=10, class_weight='balanced',
                     random_state=self.config.random_state, n_jobs=-1,
                 )),
                 ('extra_trees', ExtraTreesClassifier(
-                    n_estimators=200, max_depth=10,
+                    n_estimators=200, max_depth=10, class_weight='balanced',
                     random_state=self.config.random_state, n_jobs=-1,
                 )),
             ]
@@ -320,6 +331,11 @@ class AdvancedEnsemble:
         y_true_all, y_pred_all, y_prob_all = [], [], []
         oof_dates_all: List = []
         oof_tickers_all: List = []
+        # vector de tickers alineado posicionalmente con las filas de X
+        oof_ticker_source = (
+            df['ticker'].to_numpy()[self._kept_positions]
+            if 'ticker' in df.columns else None
+        )
         individual_scores = {name: [] for name in
                              ('xgboost', 'lightgbm', 'random_forest', 'extra_trees')}
 
@@ -345,8 +361,13 @@ class AdvancedEnsemble:
             y_pred_all.append(y_pred_fold)
             y_prob_all.append(y_prob_fold)
             oof_dates_all.extend([str(d.date()) for d in X_te.index])
-            if 'ticker' in df.columns:
-                oof_tickers_all.extend(df['ticker'].loc[X_te.index].tolist())
+            # MAPEO POSICIONAL EXACTO: X_te.index son fechas repetidas entre
+            # tickers (indice no unico); un .loc por etiqueta devolveria TODAS
+            # las filas de esas fechas (7 tickers por fecha) y desalinearia el
+            # OOF (bug historico: 49,490 tickers para 7,070 filas). Se usa el
+            # vector de tickers de las filas conservadas por prepare_features.
+            if oof_ticker_source is not None:
+                oof_tickers_all.extend(oof_ticker_source[test_idx].tolist())
             else:
                 oof_tickers_all.extend(['?'] * len(test_idx))
 

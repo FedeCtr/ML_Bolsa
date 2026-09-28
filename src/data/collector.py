@@ -33,10 +33,19 @@ class DataCollector:
                 logger.warning(f"sin datos para {ticker}")
                 return None
             
-            # guardar raw data
+            # guardar raw data SOLO si el historial nuevo es mas largo que el
+            # cacheado: los escaneos del dashboard usan periodos cortos (3mo)
+            # y no deben degradar el cache de entrenamiento (5y).
             filepath = os.path.join(self.raw_dir, f"{ticker}_raw.csv")
-            df.to_csv(filepath)
-            logger.info(f"guardado {ticker}: {len(df)} dias")
+            try:
+                existing_rows = sum(1 for _ in open(filepath, encoding='utf-8', errors='ignore')) - 1
+            except OSError:
+                existing_rows = 0
+            if len(df) >= existing_rows:
+                df.to_csv(filepath)
+                logger.info(f"guardado {ticker}: {len(df)} dias")
+            else:
+                logger.info(f"cache {ticker} conservado ({existing_rows} dias > {len(df)})")
             
             return df
             
