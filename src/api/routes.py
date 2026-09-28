@@ -5,11 +5,16 @@ Nuevos (spec 2-5): /api/scan (jobs), /api/top-signals, /api/watchlists,
 /api/paper/*, /api/model-performance, /api/universe/info.
 Originales mantenidos: /api/signal, /api/chart, /api/backtest, /api/predict.
 """
+import json
 import os
+import threading
 from datetime import datetime
+from pathlib import Path
+from typing import Dict, Optional
 
 import joblib
 import numpy as np
+import pandas as pd
 from flask import jsonify, render_template, request
 
 from ..ml.predictor import StockPredictor
@@ -466,6 +471,112 @@ def register_routes(app):
                 resultado['recommendation'] = resultado['prediccion'].upper()
             return jsonify(_clean_nan(resultado))
         except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    # ------------------------------------------------------------------
+    # Transparencia: expectativa matematica del sistema (Sprint 3)
+    # ------------------------------------------------------------------
+    _expectancy_cache: Dict = {'data': None, 'computed_at': None}
+    _expectancy_lock = threading.Lock()
+    EXPECTANCY_CONFIG = dict(prob_min=0.50, rr_multiple=2.0, vix_max=30.0,
+                             allow_short=False, one_position_per_ticker=True,
+                             max_concurrent=3, max_hold=20, risk_per_trade=0.01)
+
+    def _compute_expectancy() -> Dict:
+        """simula el sistema sobre el OOF del modelo en produccion (7 tech).
+        Costoso (~5-10s): se cachea por proceso; TTL 6 horas."""
+        now = datetime.now()
+        if (_expectancy_cache['data'] is not None
+                and _expectancy_cache['computed_at'] is not None
+                and (now - _expectancy_cache['computed_at']).total_seconds() < 6 * 3600):
+            return _expectancy_cache['data']
+        with _expectancy_lock:
+            # doble chequeo tras adquirir el lock
+            if (_expectancy_cache['data'] is not None
+                    and (datetime.now() - _expectancy_cache['computed_at']).total_seconds() < 6 * 3600):
+                return _expectancy_cache['data']
+            from ..ml.expectancy import load_oof_dataset, attach_market_data, simulate_expectancy
+            df = load_oof_dataset()
+            df = attach_market_data(df)
+            res = simulate_expectancy(df, **EXPECTANCY_CONFIG)
+            per_year = []
+            for y in sorted(df['date'].str[:4].unique()):
+                sub = df[df['date'].str[:4] == y]
+                r = simulate_expectancy(sub, **EXPECTANCY_CONFIG)
+                per_year.append({
+                    'year': y, 'n_trades': r.n_trades,
+                    'win_rate': round(r.win_rate, 4),
+                    'profit_factor': round(r.profit_factor, 3),
+                    'expectancy_r': round(r.expectancy_r, 4),
+                })
+            # benchmark SPY en el mismo periodo
+            bench = {}
+            spy_path = Path(Config().raw_data_dir) / 'SPY_raw.csv'
+            if spy_path.exists():
+                spy = pd.read_csv(spy_path)
+                spy[spy.columns[0]] = pd.to_datetime(spy[spy.columns[0]], utc=True).dt.strftime('%Y-%m-%d')
+                spy = spy.drop_duplicates(subset=spy.columns[0], keep='last') \
+                    .set_index(spy.columns[0]).sort_index().loc[df['date'].min():df['date'].max()]
+                if len(spy) > 50:
+                    norm = spy['Close'] / spy['Close'].iloc[0]
+                    rets = spy['Close'].pct_change().dropna()
+                    years = max((pd.Timestamp(df['date'].max()) - pd.Timestamp(df['date'].min())).days / 365.25, 1e-9)
+                    peak = np.maximum.accumulate(norm)
+                    bench = {
+                        'total_return_pct': round(float((norm.iloc[-1] - 1) * 100), 1),
+                        'cagr_pct': round(float((norm.iloc[-1] ** (1 / years) - 1) * 100), 1),
+                        'max_drawdown_pct': round(float(((norm - peak) / peak).min() * 100), 1),
+                        'sharpe': round(float(rets.mean() / rets.std() * np.sqrt(252)), 2),
+                    }
+            data = {
+                'generated_at': now.isoformat(),
+                'config': EXPECTANCY_CONFIG,
+                'tech7_oof': {
+                    'n_trades': res.n_trades,
+                    'win_rate': round(res.win_rate, 4),
+                    'profit_factor': round(res.profit_factor, 3),
+                    'expectancy_r': round(res.expectancy_r, 4),
+                    'sharpe': round(res.sharpe, 2),
+                    'max_drawdown_pct': round(res.max_drawdown_pct, 2),
+                    'avg_hold_days': round(res.avg_hold_days, 2),
+                    'per_year': per_year,
+                },
+                'benchmark_spy': bench,
+                'sp500_study': _load_sp500_study(),
+                'methodology': (
+                    'Probabilidades out-of-sample del walk-forward purgado; entrada en apertura '
+                    'de t+1, SL 1.5 ATR (1-5%), TP 2x riesgo, holding max 20 sesiones, costos 10pb, '
+                    'criterio SL-first. Filtros: largo-solo, VIX<=30, 1 posicion por ticker, '
+                    'max 3 concurrentes. La confianza del modelo NO es la precision.'
+                ),
+            }
+            _expectancy_cache['data'] = data
+            _expectancy_cache['computed_at'] = now
+            return data
+
+    def _load_sp500_study() -> Optional[Dict]:
+        """estudio de generalizacion S&P 500 si ya fue ejecutado."""
+        p = Path('reports/sp500_expectancy.json')
+        if not p.exists():
+            return None
+        try:
+            return json.loads(p.read_text(encoding='utf-8'))
+        except Exception:
+            return None
+
+    @app.route('/api/expectancy')
+    def api_expectancy():
+        try:
+            data = _compute_expectancy()
+            # el estudio S&P 500 se re-lee en cada request: se actualiza cuando
+            # el script de estudio termina, sin esperar al TTL de la cache
+            data = dict(data)
+            data['sp500_study'] = _load_sp500_study()
+            return jsonify(_clean_nan(data))
+        except FileNotFoundError as e:
+            return jsonify({'error': f'datos OOF no disponibles: {e}'}), 503
+        except Exception as e:
+            logger.error(f"error en /api/expectancy: {e}")
             return jsonify({'error': str(e)}), 500
 
     @app.errorhandler(404)
