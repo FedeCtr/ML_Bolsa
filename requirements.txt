@@ -27,6 +27,9 @@ fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 httpx>=0.27.0
 
+# Sprint 2: jobs programados (escaneo cada 5 min)
+APScheduler>=3.10.0
+
 # testing
 pytest>=8.0.0
 

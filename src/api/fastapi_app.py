@@ -33,14 +33,18 @@ from pydantic import BaseModel
 from src.cache import cache_delete, cache_get, cache_health, cache_set
 from src.data.collector import DataCollector
 from src.data.processor import TechnicalProcessor
+from src.data.providers import get_market_data
 from src.data.universe import get_name_map, get_sector_map, get_universe
+from src.data.universes import universe_info as saas_universe_info
 from src.db.session import healthcheck as db_healthcheck
 from src.db.session import init_db
+from src.jobs.scheduler import scheduler_status
+from src.ml.signal_store import SignalStore
 from src.ml.advanced_predictor import AdvancedPredictor
 from src.ml.expectancy import attach_market_data, load_oof_dataset, simulate_expectancy
 from src.ml.regime import detect_regime
 from src.ml.signal_engine import SIDE_BUY, SIDE_SELL, build_signal, find_pivot_levels
-from src.ml.screener import UNIVERSES, apply_filters, last_results, scan_status, start_scan
+from src.ml.screener import apply_filters, last_results, scan_status, start_scan
 from src.ml.watchlist import WatchlistStore
 from src.trading.paper import PaperTrader
 from src.utils.config import Config
@@ -60,9 +64,10 @@ EXPECTANCY_KEY = "expectancy:tech7_oof"
 TOP_SIGNALS_KEY = "top_signals"
 TOP_SIGNALS_TTL_SECONDS = 60
 
-_state: Dict[str, Any] = {"predictor": None}
+_state: Dict[str, Any] = {"predictor": None, "scheduler": None}
 _watchlists: Optional[WatchlistStore] = None
 _paper: Optional[PaperTrader] = None
+_signal_store: Optional[SignalStore] = None
 
 
 @asynccontextmanager
@@ -77,6 +82,15 @@ async def lifespan(_app: FastAPI):
     except Exception as exc:  # CI/entorno sin modelos: la API sigue degradada
         _state["predictor"] = None
         logger.warning(f"FastAPI: sin modelo ({exc}); endpoints de inferencia 503")
+    # scheduler embebido (Sprint 2): SCHEDULER_EMBEDDED=1 para el compose simple
+    if os.environ.get("SCHEDULER_EMBEDDED") == "1":
+        try:
+            from src.jobs.scheduler import start_scheduler
+
+            _state["scheduler"] = start_scheduler(run_immediately=True)
+            logger.info("FastAPI: scheduler embebido arrancado (ciclo 5 min)")
+        except Exception as exc:
+            logger.warning(f"FastAPI: scheduler embebido no arranco: {exc}")
     yield
 
 
@@ -123,6 +137,13 @@ def _get_paper() -> PaperTrader:
         init_db()
         _paper = PaperTrader()
     return _paper
+
+
+def _get_signal_store() -> SignalStore:
+    global _signal_store
+    if _signal_store is None:
+        _signal_store = SignalStore()
+    return _signal_store
 
 
 def _predictor() -> AdvancedPredictor:
@@ -272,6 +293,8 @@ def health():
         "database": "ok" if db_ok else "error",
         "cache": cache_health(),
         "model_loaded": _state["predictor"] is not None,
+        "providers": get_market_data().providers_status(),
+        "scheduler": scheduler_status(),
         "scan": scan_status(),
         "timestamp": datetime.now().isoformat(),
     }
@@ -293,7 +316,7 @@ def api_meta():
         else p.confidence_threshold,
         "trained_at": meta.get("trained_at"),
         "walk_forward": meta.get("walk_forward_metrics", {}),
-        "universes": {k: len(v) if v else 500 for k, v in UNIVERSES.items()},
+        "universes": saas_universe_info(),
     })
 
 
@@ -522,6 +545,24 @@ def api_top_signals():
     })
     cache_set(TOP_SIGNALS_KEY, payload, ttl=TOP_SIGNALS_TTL_SECONDS)
     return payload
+
+
+@app.get("/api/signals-cache")
+def api_signals_cache(limit: int = 50, only_tradable: bool = False,
+                      side: Optional[str] = None):
+    """senales del ultimo ciclo del scheduler (Redis/DB, respuesta <1s).
+
+    Fuente: espejo en cache con TTL corto; la DB (signal_cache) es la fuente
+    de verdad. No calcula inferencia al vuelo nunca.
+    """
+    rows = _get_signal_store().latest_signals(
+        limit=limit, only_tradable=only_tradable, side=side)
+    return _clean_nan({
+        "available": bool(rows),
+        "n": len(rows),
+        "signals": rows,
+        "scheduler": scheduler_status(),
+    })
 
 
 # ----------------------------------------------------------------------

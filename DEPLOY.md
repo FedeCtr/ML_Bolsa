@@ -5,6 +5,8 @@ Stack del SaaS (Sprint 1):
 | Servicio | Puerto | Stack | Uso |
 |---|---|---|---|
 | API unificada | 8000 | FastAPI + gunicorn/uvicorn | senales, screener, paper trading, watchlists, transparencia (`/docs` con OpenAPI) |
+| Frontend | 3000 | Next.js 15 + Tailwind 4 | dashboard institucional (`frontend/`, consume la API con `NEXT_PUBLIC_API_URL`) |
+| Scheduler | — | APScheduler (proceso o embebido) | escaneo cada 5 min -> `signal_cache` + Redis (`scripts/run_scheduler.py` o `SCHEDULER_EMBEDDED=1`) |
 | PostgreSQL | 5432 | postgres:16-alpine | estado del SaaS (users, paper, watchlists, signal_cache) |
 | Redis | 6379 | redis:7-alpine | cache de lecturas calientes (<1s) |
 
@@ -19,6 +21,12 @@ docker compose up -d --build    # api + postgres + redis (healthchecks)
 DATABASE_URL=postgresql+psycopg://mlbolsa:mlbolsa@localhost:5432/mlbolsa \
   alembic upgrade head
 uvicorn src.api.fastapi_app:app --port 8010    # /docs con OpenAPI
+
+# scheduler standalone (o SCHEDULER_EMBEDDED=1 al arrancar la API):
+python scripts/run_scheduler.py
+
+# frontend Next.js (Sprint 4):
+cd frontend && npm install && npm run dev      # http://localhost:3000
 ```
 
 - Migraciones: `alembic upgrade head` (env de `alembic_migrations/`, respeta
