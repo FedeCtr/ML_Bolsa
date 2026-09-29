@@ -1,10 +1,10 @@
 """
-Paper trading persistente (forward testing sin capital).
+Paper trading persistente (forward testing sin capital) sobre SQLAlchemy.
 
 Ciclo diario (spec 5):
   1. record_signal(): registra la senal emitida hoy para cada ticker
-     (entrada, SL, TP1/TP2, confianza, regimen) en SQLite — una por
-     ticker/dia (UNIQUE trade_date+ticker).
+     (entrada, SL, TP1/TP2, confianza, regimen) — una por ticker/dia
+     (UNIQUE trade_date+ticker, upsert).
   2. resolve_pending(): cuando existe el cierre del dia siguiente, resuelve
      cada senal: acierto direccional, toque de TP1 o SL (conservador: si
      ambos se tocan en la misma sesion cuenta SL) hasta 5 sesiones.
@@ -12,70 +12,112 @@ Ciclo diario (spec 5):
      senal resuelta: Sharpe, Max Drawdown, Win/Loss, Profit Factor,
      directional accuracy.
 
-La BBDD vive en data/paper_trading.db (ignorada por git).
+Backend: DATABASE_URL (PostgreSQL en prod) o SQLite data/saas.db (dev).
+Migracion: si existe el SQLite legado data/paper_trading.db con filas y la
+tabla nueva esta vacia, se importan automaticamente al primer uso.
 """
 import os
-import sqlite3
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import pandas as pd
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from ..utils.logger import get_logger
+from ..db.models import PaperOutcome, PaperSignal
+from ..db.session import get_session_factory, init_db
 from ..utils.config import Config
+from ..utils.logger import get_logger
 from ..backtesting.metrics import compute_metrics
 
 logger = get_logger(__name__)
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS signals (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts TEXT NOT NULL,
-    trade_date TEXT NOT NULL,
-    ticker TEXT NOT NULL,
-    signal TEXT NOT NULL,
-    side TEXT NOT NULL,
-    entry REAL,
-    stop_loss REAL,
-    tp1 REAL,
-    tp2 REAL,
-    confidence_pct REAL,
-    conviction_pct REAL,
-    prob_up REAL,
-    price REAL,
-    position_size_pct REAL,
-    regime TEXT,
-    UNIQUE(trade_date, ticker)
-);
-CREATE TABLE IF NOT EXISTS outcomes (
-    signal_id INTEGER PRIMARY KEY REFERENCES signals(id),
-    next_close REAL,
-    next_ret_pct REAL,
-    direction_correct INTEGER,
-    hit_tp1 INTEGER,
-    hit_sl INTEGER,
-    resolved_at TEXT
-);
-"""
+LEGACY_DB_NAME = 'paper_trading.db'
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class PaperTrader:
-    """registro y resolucion de senales paper en SQLite"""
+    """registro y resolucion de senales paper (SQLAlchemy)"""
 
     MAX_SESSIONS_TO_RESOLVE = 5   # ventanas para tocar TP1/SL
 
     def __init__(self, db_path: Optional[str] = None):
-        if db_path is None:
-            db_path = os.path.join(str(Config().DATA_DIR), 'paper_trading.db')
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        self.db_path = db_path
-        with self._conn() as c:
-            c.executescript(_SCHEMA)
+        # db_path se acepta por compatibilidad (tests): si apunta a un SQLite
+        # temporal se usa como DATABASE_URL aislada de este trader.
+        self._owns_engine = db_path is not None
+        if db_path is not None:
+            os.makedirs(os.path.dirname(db_path) or '.', exist_ok=True)
+            from sqlalchemy import create_engine
+            from sqlalchemy.orm import sessionmaker
+            from ..db.models import Base
+            self._engine = create_engine(f"sqlite:///{db_path.as_posix() if hasattr(db_path, 'as_posix') else db_path}",
+                                         connect_args={'check_same_thread': False})
+            Base.metadata.create_all(self._engine)
+            self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
+            self._legacy_path = None
+        else:
+            init_db()
+            self._engine = None
+            self._Session = get_session_factory()
+            self._legacy_path = os.path.join(str(Config().DATA_DIR), LEGACY_DB_NAME)
 
-    def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        with self._session() as s:
+            s.query(PaperSignal).limit(1).all()   # valida esquema/conexion
+        if self._legacy_path and os.path.exists(self._legacy_path):
+            self._import_legacy_if_empty()
+
+    # ------------------------------------------------------------------
+    # infraestructura
+    # ------------------------------------------------------------------
+
+    def _session(self) -> Session:
+        return self._Session()
+
+    def _import_legacy_if_empty(self) -> None:
+        """importa el SQLite legado una sola vez si la tabla nueva esta vacia."""
+        try:
+            with self._session() as s:
+                if s.query(PaperSignal).first() is not None:
+                    return
+            import sqlite3
+            conn = sqlite3.connect(self._legacy_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """SELECT s.*, o.next_close, o.next_ret_pct, o.direction_correct,
+                          o.hit_tp1, o.hit_sl, o.resolved_at
+                   FROM signals s LEFT JOIN outcomes o ON o.signal_id = s.id"""
+            ).fetchall()
+            conn.close()
+            if not rows:
+                return
+            with self._session() as s:
+                for r in rows:
+                    sig = PaperSignal(
+                        ts=r['ts'], trade_date=r['trade_date'], ticker=r['ticker'],
+                        signal=r['signal'], side=r['side'], entry=r['entry'],
+                        stop_loss=r['stop_loss'], tp1=r['tp1'], tp2=r['tp2'],
+                        confidence_pct=r['confidence_pct'],
+                        conviction_pct=r['conviction_pct'], prob_up=r['prob_up'],
+                        price=r['price'], position_size_pct=r['position_size_pct'],
+                        regime=r['regime'],
+                    )
+                    s.add(sig)
+                    s.flush()
+                    if r['resolved_at'] is not None:
+                        s.add(PaperOutcome(
+                            signal_id=sig.id, next_close=r['next_close'],
+                            next_ret_pct=r['next_ret_pct'],
+                            direction_correct=int(r['direction_correct'] or 0),
+                            hit_tp1=int(r['hit_tp1'] or 0), hit_sl=int(r['hit_sl'] or 0),
+                            resolved_at=r['resolved_at'],
+                        ))
+                s.commit()
+            logger.info(f"paper: importadas {len(rows)} senales del legado {self._legacy_path}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"paper: importacion legado omitida ({e})")
 
     # ------------------------------------------------------------------
     # 1) registro
@@ -83,38 +125,33 @@ class PaperTrader:
 
     def record_signal(self, s: Dict) -> Optional[int]:
         """registra (o actualiza) la senal del dia para un ticker"""
-        now = datetime.now(timezone.utc).isoformat()
         tps = s.get('take_profits') or []
         tp1 = tps[0]['price'] if len(tps) > 0 else None
         tp2 = tps[1]['price'] if len(tps) > 1 else None
-        with self._conn() as c:
-            cur = c.execute(
-                """INSERT INTO signals (ts, trade_date, ticker, signal, side,
-                     entry, stop_loss, tp1, tp2, confidence_pct, conviction_pct,
-                     prob_up, price, position_size_pct, regime)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                   ON CONFLICT(trade_date, ticker) DO UPDATE SET
-                     signal=excluded.signal, side=excluded.side,
-                     entry=excluded.entry, stop_loss=excluded.stop_loss,
-                     tp1=excluded.tp1, tp2=excluded.tp2,
-                     confidence_pct=excluded.confidence_pct,
-                     conviction_pct=excluded.conviction_pct,
-                     prob_up=excluded.prob_up, price=excluded.price,
-                     position_size_pct=excluded.position_size_pct,
-                     regime=excluded.regime, ts=excluded.ts
-                """,
-                (now, s.get('as_of'), s.get('ticker'), s.get('signal'), s.get('side'),
-                 s.get('entry'), s.get('stop_loss'), tp1, tp2,
-                 s.get('confidence_pct'), s.get('conviction_pct'),
-                 s.get('prob_up'), s.get('price'), s.get('position_size_pct'),
-                 (s.get('regime') or {}).get('status')),
-            )
-            row = c.execute(
-                "SELECT id FROM signals WHERE trade_date=? AND ticker=?",
-                (s.get('as_of'), s.get('ticker')),
-            ).fetchone()
+        with self._session() as db:
+            row = db.query(PaperSignal).filter_by(
+                trade_date=s.get('as_of'), ticker=s.get('ticker')).one_or_none()
+            if row is None:
+                row = PaperSignal(trade_date=s.get('as_of'), ticker=s.get('ticker'))
+                db.add(row)
+            row.ts = _utcnow_iso()
+            row.signal = s.get('signal')
+            row.side = s.get('side')
+            row.entry = s.get('entry')
+            row.stop_loss = s.get('stop_loss')
+            row.tp1 = tp1
+            row.tp2 = tp2
+            row.confidence_pct = s.get('confidence_pct')
+            row.conviction_pct = s.get('conviction_pct')
+            row.prob_up = s.get('prob_up')
+            row.price = s.get('price')
+            row.position_size_pct = s.get('position_size_pct')
+            row.regime = (s.get('regime') or {}).get('status')
+            db.commit()   # SQLAlchemy 2.0: sin commit automatico al salir del with
+            db.flush()
+            sig_id = row.id
         logger.info(f"paper: senal registrada {s.get('ticker')} {s.get('signal')} ({s.get('as_of')})")
-        return row['id'] if row else None
+        return sig_id
 
     # ------------------------------------------------------------------
     # 2) resolucion vs mercado real
@@ -130,14 +167,20 @@ class PaperTrader:
             numero de senales resueltas ahora.
         """
         resolved = 0
-        with self._conn() as c:
-            pending = c.execute(
-                """SELECT s.* FROM signals s
-                   LEFT JOIN outcomes o ON o.signal_id = s.id
-                   WHERE o.signal_id IS NULL""",
-            ).fetchall()
+        with self._session() as db:
+            pending = (
+                db.query(PaperSignal)
+                .outerjoin(PaperOutcome, PaperOutcome.signal_id == PaperSignal.id)
+                .filter(PaperOutcome.signal_id.is_(None))
+                .all()
+            )
+            sigs = [
+                {c: getattr(p, c) for c in
+                 ('id', 'trade_date', 'ticker', 'side', 'entry', 'stop_loss', 'tp1')}
+                for p in pending
+            ]
 
-        for sig in pending:
+        for sig in sigs:
             try:
                 df = ohlc_provider(sig['ticker'])
                 if df is None or df.empty:
@@ -173,15 +216,17 @@ class PaperTrader:
                             hit_tp1 = 1
                             break
 
-                with self._conn() as c:
-                    c.execute(
-                        """INSERT OR REPLACE INTO outcomes
-                           (signal_id, next_close, next_ret_pct, direction_correct,
-                            hit_tp1, hit_sl, resolved_at)
-                           VALUES (?,?,?,?,?,?,?)""",
-                        (sig['id'], next_close, next_ret_pct, direction_correct,
-                         hit_tp1, hit_sl, datetime.now(timezone.utc).isoformat()),
-                    )
+                with self._session() as db:
+                    exists = db.get(PaperOutcome, sig['id'])
+                    if exists is None:
+                        db.add(PaperOutcome(
+                            signal_id=sig['id'], next_close=next_close,
+                            next_ret_pct=next_ret_pct,
+                            direction_correct=direction_correct,
+                            hit_tp1=hit_tp1, hit_sl=hit_sl,
+                            resolved_at=_utcnow_iso(),
+                        ))
+                        db.commit()
                 resolved += 1
             except Exception as e:
                 logger.warning(f"paper: no se pudo resolver {sig['ticker']} {sig['trade_date']}: {e}")
@@ -196,19 +241,30 @@ class PaperTrader:
 
     def performance(self) -> Dict:
         """metricas financieras de todas las senales resueltas"""
-        with self._conn() as c:
-            rows = c.execute(
-                """SELECT s.trade_date, s.ticker, s.signal, s.side, s.conviction_pct,
-                          s.position_size_pct, o.next_ret_pct, o.direction_correct,
-                          o.hit_tp1, o.hit_sl
-                   FROM signals s JOIN outcomes o ON o.signal_id = s.id
-                   ORDER BY s.trade_date""",
-            ).fetchall()
+        with self._session() as db:
+            rows = (
+                db.query(PaperSignal, PaperOutcome)
+                .join(PaperOutcome, PaperOutcome.signal_id == PaperSignal.id)
+                .order_by(PaperSignal.trade_date)
+                .all()
+            )
+            data = [
+                {
+                    'trade_date': ps.trade_date, 'ticker': ps.ticker,
+                    'signal': ps.signal, 'side': ps.side,
+                    'conviction_pct': ps.conviction_pct,
+                    'position_size_pct': ps.position_size_pct,
+                    'next_ret_pct': po.next_ret_pct,
+                    'direction_correct': po.direction_correct,
+                    'hit_tp1': po.hit_tp1, 'hit_sl': po.hit_sl,
+                }
+                for ps, po in rows
+            ]
 
-        if not rows:
+        if not data:
             return {'available': False, 'n_resolved': 0}
 
-        df = pd.DataFrame([dict(r) for r in rows])
+        df = pd.DataFrame(data)
         # retorno por senal ponderado por sizing (paper: fraccion del sizing/100)
         weights = (df['position_size_pct'].fillna(0) / 100).clip(0, 1)
         raw = df['next_ret_pct'] / 100
@@ -241,11 +297,25 @@ class PaperTrader:
 
     def list_signals(self, limit: int = 100) -> List[Dict]:
         """ultimas senales con su estado de resolucion"""
-        with self._conn() as c:
-            rows = c.execute(
-                """SELECT s.*, o.next_ret_pct, o.direction_correct, o.hit_tp1, o.hit_sl
-                   FROM signals s LEFT JOIN outcomes o ON o.signal_id = s.id
-                   ORDER BY s.trade_date DESC, s.ticker LIMIT ?""",
-                (limit,),
-            ).fetchall()
-        return [dict(r) for r in rows]
+        with self._session() as db:
+            rows = (
+                db.query(PaperSignal, PaperOutcome)
+                .outerjoin(PaperOutcome, PaperOutcome.signal_id == PaperSignal.id)
+                .order_by(PaperSignal.trade_date.desc(), PaperSignal.ticker)
+                .limit(limit)
+                .all()
+            )
+            out = []
+            for ps, po in rows:
+                d = {c: getattr(ps, c) for c in
+                     ('id', 'ts', 'trade_date', 'ticker', 'signal', 'side', 'entry',
+                      'stop_loss', 'tp1', 'tp2', 'confidence_pct', 'conviction_pct',
+                      'prob_up', 'price', 'position_size_pct', 'regime')}
+                d.update({
+                    'next_ret_pct': po.next_ret_pct if po else None,
+                    'direction_correct': po.direction_correct if po else None,
+                    'hit_tp1': po.hit_tp1 if po else None,
+                    'hit_sl': po.hit_sl if po else None,
+                })
+                out.append(d)
+            return out

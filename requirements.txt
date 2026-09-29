@@ -18,6 +18,15 @@ optuna>=4.0.0
 # indicadores tecnicos
 ta>=0.11.0
 
+# Sprint 1 SaaS: DB + migraciones + cache + API unificada
+SQLAlchemy>=2.0.30
+alembic>=1.13.0
+psycopg[binary]>=3.1.0
+redis>=5.0.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+httpx>=0.27.0
+
 # testing
 pytest>=8.0.0
 

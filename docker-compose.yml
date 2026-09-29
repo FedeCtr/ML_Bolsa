@@ -5,16 +5,49 @@ services:
     restart: unless-stopped
     environment:
       - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql+psycopg://mlbolsa:mlbolsa@postgres:5432/mlbolsa
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - app-data:/app/data        # paper trading, watchlists, cache raw
     ports:
       - "8000:8000"
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: mlbolsa-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=mlbolsa
+      - POSTGRES_PASSWORD=mlbolsa
+      - POSTGRES_DB=mlbolsa
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlbolsa -d mlbolsa"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7-alpine
     container_name: mlbolsa-redis
     restart: unless-stopped
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
 volumes:
   app-data:
+  postgres-data:

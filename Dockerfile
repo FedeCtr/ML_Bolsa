@@ -19,7 +19,9 @@ USER appuser
 EXPOSE 8000
 ENV PORT=8000
 
-# gunicorn: 4 workers, timeout alto (los escaneos tardan)
-CMD ["gunicorn", "src.api.app:create_app()", \
-     "--workers", "4", "--threads", "2", "--timeout", "120", \
+# API unificada FastAPI (Sprint 1): workers uvicorn, timeout alto (los escaneos tardan).
+# 2 workers: cada uno carga el ensemble en memoria (~200-400MB).
+CMD ["gunicorn", "src.api.fastapi_app:app", \
+     "-k", "uvicorn.workers.UvicornWorker", \
+     "--workers", "2", "--threads", "4", "--timeout", "120", \
      "--bind", "0.0.0.0:8000"]
