@@ -7,6 +7,13 @@ services:
       - PYTHONUNBUFFERED=1
       - DATABASE_URL=postgresql+psycopg://mlbolsa:mlbolsa@postgres:5432/mlbolsa
       - REDIS_URL=redis://redis:6379/0
+      - SCHEDULER_EMBEDDED=${SCHEDULER_EMBEDDED:-0}
+      - ALPACA_API_KEY=${ALPACA_API_KEY:-}
+      - ALPACA_API_SECRET=${ALPACA_API_SECRET:-}
+      - FMP_API_KEY=${FMP_API_KEY:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+      - ALERT_EMAIL_FROM=${ALERT_EMAIL_FROM:-ML_Bolsa <onboarding@resend.dev>}
     depends_on:
       postgres:
         condition: service_healthy
@@ -14,8 +21,49 @@ services:
         condition: service_healthy
     volumes:
       - app-data:/app/data        # paper trading, watchlists, cache raw
+      - models-data:/app/models   # ensemble + calibracion + OOF
     ports:
       - "8000:8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        # desde el navegador la API vive en localhost:8000 (mapeada del api)
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    container_name: mlbolsa-frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+
+  scheduler:
+    build: .
+    container_name: mlbolsa-scheduler
+    restart: unless-stopped
+    command: python scripts/run_scheduler.py
+    environment:
+      - PYTHONUNBUFFERED=1
+      - RUN_MIGRATIONS=0   # las aplica el servicio api al arrancar
+      - DATABASE_URL=postgresql+psycopg://mlbolsa:mlbolsa@postgres:5432/mlbolsa
+      - REDIS_URL=redis://redis:6379/0
+      - SCHEDULER_UNIVERSE=${SCHEDULER_UNIVERSE:-sp500}
+      - SCHEDULER_PERIOD=${SCHEDULER_PERIOD:-3mo}
+      - ALPACA_API_KEY=${ALPACA_API_KEY:-}
+      - ALPACA_API_SECRET=${ALPACA_API_SECRET:-}
+      - FMP_API_KEY=${FMP_API_KEY:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - app-data:/app/data
+      - models-data:/app/models
 
   postgres:
     image: postgres:16-alpine
@@ -50,4 +98,5 @@ services:
 
 volumes:
   app-data:
+  models-data:
   postgres-data:

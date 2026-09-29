@@ -1,0 +1,11 @@
+.git
+.gitignore
+venv/
+frontend/node_modules
+frontend/.next
+data/
+logs/
+reports/
+**/__pycache__
+*.pyc
+.github/

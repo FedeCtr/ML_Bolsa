@@ -1,8 +1,8 @@
-import Image from "next/image";
 import Link from "next/link";
 import SignalCard from "@/components/SignalCard";
 import TransparencyPanel from "@/components/TransparencyPanel";
-import { api, API_URL } from "@/lib/api";
+import { SessionButton } from "@/lib/clerk";
+import { api } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
@@ -45,6 +45,12 @@ export default async function Dashboard() {
         </div>
 
         <div className="flex items-center gap-2 text-xs">
+          <Link
+            href="/screener"
+            className="glass rounded-lg px-3 py-1.5 font-medium text-mist-200 hover:text-gold-400"
+          >
+            Screener
+          </Link>
           <StatusDot
             ok={!!health && health.status === "ok"}
             label={
@@ -61,6 +67,7 @@ export default async function Dashboard() {
             ok={!!health?.model_loaded}
             label={health?.model_loaded ? "modelo cargado" : "modelo —"}
           />
+          <SessionButton />
         </div>
       </header>
 
@@ -118,7 +125,8 @@ export default async function Dashboard() {
             </p>
             <p className="mt-2 text-xs text-mist-400">
               Ejecuta <code className="text-gold-400">python scripts/run_scheduler.py</code>{" "}
-              o arranca la API con <code className="text-gold-400">SCHEDULER_EMBEDDED=1</code>.
+              o arranca la API con <code className="text-gold-400">SCHEDULER_EMBEDDED=1</code>. O
+              abre el <Link href="/screener" className="text-gold-400 hover:underline">screener</Link>.
             </p>
           </div>
         ) : (

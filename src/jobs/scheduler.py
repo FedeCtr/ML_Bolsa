@@ -171,6 +171,17 @@ def run_cycle(universe: str = "sp500", period: str = "3mo", max_workers: int = 8
                       last_written=written, cycles=_state["cycles"] + 1)
     logger.info(f"ciclo {universe}: {written} senales persistidas "
                 f"({len(signals)} validas de {len(tickers)} tickers) en {seconds:.1f}s")
+
+    # Sprint 5: alertas Telegram/email de senales fuertes nuevas (best-effort)
+    try:
+        from ..alerts.notify import notify_new_strong_signals
+
+        alerts = notify_new_strong_signals(signals)
+        if alerts.get("sent"):
+            logger.info(f"alertas enviadas: {alerts}")
+    except Exception as exc:
+        logger.warning(f"alertas omitidas: {exc}")
+
     return {"written": written, "n_valid": len(signals),
             "n_tickers": len(tickers), "seconds": round(seconds, 1)}
 

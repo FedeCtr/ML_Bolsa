@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { MaybeClerkProvider } from "@/lib/clerk";
 
 export const metadata: Metadata = {
   title: "ML_Bolsa — Señales institucionales",
@@ -11,8 +12,10 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="es" className="dark">
-      <body className="min-h-screen antialiased">{children}</body>
-    </html>
+    <MaybeClerkProvider>
+      <html lang="es" className="dark">
+        <body className="min-h-screen antialiased">{children}</body>
+      </html>
+    </MaybeClerkProvider>
   );
 }

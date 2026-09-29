@@ -146,7 +146,8 @@ class PaperTrader:
             row.prob_up = s.get('prob_up')
             row.price = s.get('price')
             row.position_size_pct = s.get('position_size_pct')
-            row.regime = (s.get('regime') or {}).get('status')
+            regime = s.get('regime')
+            row.regime = regime.get('status') if isinstance(regime, dict) else regime
             db.commit()   # SQLAlchemy 2.0: sin commit automatico al salir del with
             db.flush()
             sig_id = row.id

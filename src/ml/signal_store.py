@@ -137,9 +137,17 @@ class SignalStore:
     # ------------------------------------------------------------------
 
     def latest_signals(self, limit: int = 50, only_tradable: bool = False,
-                       side: Optional[str] = None) -> List[Dict[str, Any]]:
-        """ultimas senales (cache 60s -> DB)."""
-        key = f"{REDIS_KEY_LATEST}:{limit}:{only_tradable}:{side or 'all'}"
+                       side: Optional[str] = None,
+                       signals: Optional[List[str]] = None,
+                       min_confidence: Optional[float] = None) -> List[Dict[str, Any]]:
+        """ultimas senales (cache 60s -> DB).
+
+        signals: nombres de senal a incluir (p.ej. ['COMPRA_FUERTE']);
+        min_confidence: confianza minima en puntos porcentuales.
+        """
+        sig_key = ",".join(sorted(signals)) if signals else "all"
+        key = (f"{REDIS_KEY_LATEST}:{limit}:{only_tradable}:{side or 'all'}:"
+               f"{sig_key}:{min_confidence or 0}")
         cached = cache_get(key)
         if cached is not None:
             return cached
@@ -164,6 +172,13 @@ class SignalStore:
             wanted = {"buy": {"buy", "largo"}, "sell": {"sell", "corto"}}.get(
                 side.lower(), {side.lower()})
             rows = [r for r in rows if str(r.get("side", "")).lower() in wanted]
+        if signals:
+            wanted_signals = {s.upper().replace(" ", "_") for s in signals}
+            rows = [r for r in rows
+                    if str(r.get("signal", "")).upper().replace(" ", "_") in wanted_signals]
+        if min_confidence is not None:
+            rows = [r for r in rows
+                    if (r.get("confidence_pct") or 0) >= min_confidence]
         rows = rows[:limit]
         cache_set(key, rows, ttl=60)
         return rows

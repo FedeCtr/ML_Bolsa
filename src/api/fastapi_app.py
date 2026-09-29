@@ -28,6 +28,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.cache import cache_delete, cache_get, cache_health, cache_set
@@ -102,6 +103,21 @@ app = FastAPI(
     ),
     version="2.1.0",
     lifespan=lifespan,
+)
+
+# CORS: el frontend (Next.js) consume la API desde el navegador.
+# CORS_ORIGINS lista separada por comas; por defecto localhost:3000.
+_cors_origins = [
+    o.strip() for o in os.environ.get(
+        "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",") if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins or ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -387,6 +403,13 @@ def api_signal(ticker: str, period: str = "1y"):
         regime = detect_regime(df, vix_series=vix["Close"] if vix is not None else None)
         sig = build_signal(ticker, df, prob_up, as_of=str(df.index[-1].date()), regime=regime)
         payload = sig.to_dict()
+        if isinstance(payload.get("regime"), dict):  # JSON canónico: status plano
+            payload["regime"] = payload["regime"].get("status")
+        payload["regime_detail"] = regime if isinstance(regime, dict) else None
+        # contexto tecnico para la ficha (misma fuente que el screener)
+        payload["rsi"] = round(float(df["rsi"].iloc[-1]), 1) if "rsi" in df.columns else None
+        payload["volume_ratio"] = (round(float(df["volumen_ratio"].iloc[-1]), 2)
+                                   if "volumen_ratio" in df.columns else None)
         payload["sector"] = get_sector_map().get(ticker, "Otros")
         payload["name"] = get_name_map().get(ticker, ticker)
         payload["levels_nature"] = "riesgo_determinista_no_modelo"
@@ -549,14 +572,19 @@ def api_top_signals():
 
 @app.get("/api/signals-cache")
 def api_signals_cache(limit: int = 50, only_tradable: bool = False,
-                      side: Optional[str] = None):
+                      side: Optional[str] = None, signal: Optional[str] = None,
+                      min_confidence: Optional[float] = None):
     """senales del ultimo ciclo del scheduler (Redis/DB, respuesta <1s).
 
+    signal: lista separada por comas (p.ej. 'COMPRA_FUERTE,COMPRA').
     Fuente: espejo en cache con TTL corto; la DB (signal_cache) es la fuente
     de verdad. No calcula inferencia al vuelo nunca.
     """
     rows = _get_signal_store().latest_signals(
-        limit=limit, only_tradable=only_tradable, side=side)
+        limit=limit, only_tradable=only_tradable, side=side,
+        signals=[s for s in (signal or "").split(",") if s.strip()] or None,
+        min_confidence=min_confidence,
+    )
     return _clean_nan({
         "available": bool(rows),
         "n": len(rows),
@@ -674,6 +702,33 @@ def api_infer(ticker: str, period: str = "1y", with_levels: bool = True):
         for k in ("take_profits", "supports", "resistances", "notes"):
             payload.pop(k, None)
     return payload
+
+
+@app.get("/api/insights/{ticker}")
+def api_insights(ticker: str, period: str = "1y"):
+    """AI Insights: por que de la senal via TreeSHAP (boosters del ensemble).
+
+    Devuelve top factores con direccion (buy/sell), presion alcista/bajista y
+    resumen en lenguaje natural. 503 si el ensemble no soporta contribuciones.
+    """
+    p = _predictor()
+    ticker = ticker.upper()
+    try:
+        res = _download_with_context(ticker, period)
+        if res is None:
+            raise HTTPException(404, f"sin datos para {ticker}")
+        df, _ = res
+        from src.ml.insights import explain_signal
+
+        insights = explain_signal(p, df)
+        if insights is None:
+            raise HTTPException(503, "explicabilidad no disponible para este modelo")
+        return _clean_nan(insights)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"error en insights {ticker}: {e}")
+        raise HTTPException(500, str(e))
 
 
 @app.get("/api/predict/{ticker}")
