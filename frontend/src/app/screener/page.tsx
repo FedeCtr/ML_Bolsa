@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import SignalCard from "@/components/SignalCard";
 import { API_URL, type Signal } from "@/lib/api";
+import { billingStatus, localEmail, type BillingStatus } from "@/lib/billing";
 
 const MARKETS: { id: string; label: string }[] = [
   { id: "sp500", label: "S&P 500" },
@@ -23,6 +24,15 @@ export default function ScreenerPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastQuery, setLastQuery] = useState<string | null>(null);
+  const [billing, setBilling] = useState<BillingStatus | null>(null);
+
+  // paywall Sprint 6: con sesion local, el plan free solo ve los demo
+  useEffect(() => {
+    const em = localEmail();
+    if (!em) return;
+    billingStatus(em).then(setBilling).catch(() => setBilling(null));
+  }, []);
+  const isFree = !!billing && !billing.is_pro;
 
   const nFilters = useMemo(
     () => signals.length + (minConfidence > 0 ? 1 : 0) + (onlyTradable ? 1 : 0),
@@ -61,6 +71,8 @@ export default function ScreenerPage() {
       if (signals.length) qs.set("signal", signals.join(","));
       if (minConfidence > 0) qs.set("min_confidence", String(minConfidence));
       if (onlyTradable) qs.set("only_tradable", "1");
+      const em = localEmail();
+      if (em) qs.set("email", em);
       const res = await fetch(`${API_URL}/api/signals-cache?${qs}`);
       if (!res.ok) throw new Error(`API ${res.status}`);
       const data = await res.json();
@@ -101,13 +113,15 @@ export default function ScreenerPage() {
                 <button
                   key={m.id}
                   onClick={() => setMarket(m.id)}
+                  disabled={isFree && m.id !== "sp500"}
+                  title={isFree && m.id !== "sp500" ? "Disponible en Pro" : undefined}
                   className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
                     market === m.id
                       ? "border-gold-400/50 bg-gold-500/15 text-gold-400"
                       : "border-mist-400/15 text-mist-400 hover:text-mist-200"
-                  }`}
+                  } disabled:cursor-not-allowed disabled:opacity-40`}
                 >
-                  {m.label}
+                  {m.label}{isFree && m.id !== "sp500" ? " 🔒" : ""}
                 </button>
               ))}
             </div>
@@ -188,6 +202,21 @@ export default function ScreenerPage() {
           </span>
         </div>
       </section>
+
+      {/* aviso del plan free */}
+      {isFree && (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gold-400/30 bg-gold-500/10 px-4 py-3 text-xs text-gold-300">
+          <span>
+            Plan Free: viendo solo los activos demo ({billing?.free_tickers.join(", ")}).
+          </span>
+          <Link
+            href="/pricing"
+            className="rounded-lg bg-gold-500 px-3 py-1.5 font-bold text-ink-950 hover:opacity-90"
+          >
+            Desbloquear {MARKETS.length} mercados con Pro
+          </Link>
+        </div>
+      )}
 
       {/* resultados */}
       <section className="mt-6">

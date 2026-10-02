@@ -1,14 +1,9 @@
-"""API unificada FastAPI del SaaS ML_Bolsa (Sprint 1).
+"""API unificada FastAPI del SaaS ML_Bolsa.
 
 Puerta de entrada JSON unica del producto: senales, screener, paper trading,
-watchlists, transparencia (expectativa) y salud del sistema. El dashboard
-Flask sigue vivo en dev; en prod el frontend Next.js (Sprint 4) consumira
-esta API.
-
-Diferencias con el Flask heredado:
-- Persistencia SQLAlchemy (src.db) + migraciones Alembic.
-- Lecturas calientes cacheadas en Redis (src.cache, fallback memoria).
-- OpenAPI automatica en /docs.
+watchlists, transparencia (expectativa), monetizacion y salud del sistema.
+Las vistas viven en frontend/ (Next.js); el Flask heredado fue jubilado en
+el Sprint 6.
 
 Uso:
     uvicorn src.api.fastapi_app:app --host 0.0.0.0 --port 8010
@@ -27,7 +22,7 @@ from typing import Any, Dict, Optional
 import joblib
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -203,7 +198,7 @@ def _compute_expectancy() -> Dict:
     """simula el sistema sobre el OOF del modelo en produccion (7 tech).
 
     Costoso (~5-10s): cache en Redis/memoria TTL 6h + lock por proceso
-    (lock + double-check, mismo patron que el Flask heredado).
+    (lock + double-check).
     """
     cached = cache_get(EXPECTANCY_KEY)
     if cached is not None:
@@ -387,9 +382,21 @@ def api_universe_info():
 # ----------------------------------------------------------------------
 
 @app.get("/api/signal/{ticker}")
-def api_signal(ticker: str, period: str = "1y"):
+def api_signal(ticker: str, period: str = "1y", email: Optional[str] = None):
     p = _predictor()
     ticker = ticker.upper()
+    # paywall Sprint 6: sin email = beta local abierta; con email, tier free
+    # solo accede a los activos demo
+    if email:
+        from src.billing import stripe_gateway as sg
+
+        u = sg.get_or_create_user(email)
+        if not sg.can_access_ticker(ticker, u.tier or sg.FREE_TIER):
+            raise HTTPException(402, detail={
+                "code": "upgrade_required",
+                "message": f"Desbloquea el analisis completo de {ticker} con Pro",
+                "ticker": ticker,
+            })
     try:
         res = _download_with_context(ticker, period)
         if res is None:
@@ -573,7 +580,8 @@ def api_top_signals():
 @app.get("/api/signals-cache")
 def api_signals_cache(limit: int = 50, only_tradable: bool = False,
                       side: Optional[str] = None, signal: Optional[str] = None,
-                      min_confidence: Optional[float] = None):
+                      min_confidence: Optional[float] = None,
+                      email: Optional[str] = None):
     """senales del ultimo ciclo del scheduler (Redis/DB, respuesta <1s).
 
     signal: lista separada por comas (p.ej. 'COMPRA_FUERTE,COMPRA').
@@ -585,12 +593,86 @@ def api_signals_cache(limit: int = 50, only_tradable: bool = False,
         signals=[s for s in (signal or "").split(",") if s.strip()] or None,
         min_confidence=min_confidence,
     )
+    # paywall Sprint 6: tier free solo ve los activos demo (identidad por email
+    # mientras Clerk consume la API; sin email = beta local sin limites)
+    tier = "pro"
+    if email:
+        from src.billing import stripe_gateway as sg
+
+        tier = sg.get_or_create_user(email).tier or sg.FREE_TIER
+        if tier != sg.PRO_TIER:
+            rows = [r for r in rows
+                    if str(r.get("ticker", "")).upper() in sg.FREE_TICKERS]
     return _clean_nan({
         "available": bool(rows),
         "n": len(rows),
         "signals": rows,
+        "tier": tier,
         "scheduler": scheduler_status(),
     })
+
+
+# ----------------------------------------------------------------------
+# monetizacion (Sprint 6): Stripe checkout + webhooks + entitlements
+# ----------------------------------------------------------------------
+
+class CheckoutRequest(BaseModel):
+    email: str
+    display_name: str = ""
+
+
+@app.get("/api/billing/config")
+def api_billing_config():
+    """config para /pricing: features por tier y si Stripe esta activo."""
+    from src.billing import stripe_gateway as sg
+
+    return {
+        "stripe_configured": sg.stripe_configured(),
+        "price_amount_cents": int(os.environ.get("STRIPE_PRICE_PRO_AMOUNT", "2900")),
+        "free_tickers": sorted(sg.FREE_TICKERS),
+        "features_free": sg.tier_limit(sg.FREE_TIER),
+        "features_pro": sg.tier_limit(sg.PRO_TIER),
+    }
+
+
+@app.post("/api/billing/checkout")
+def api_billing_checkout(body: CheckoutRequest):
+    """crea la session de Checkout Pro (503 si Stripe no esta configurado)."""
+    from src.billing import stripe_gateway as sg
+
+    user = sg.get_or_create_user(body.email, body.display_name)
+    try:
+        session = sg.create_checkout_session(user)
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    return {"checkout_url": session["url"], "session_id": session["id"]}
+
+
+@app.post("/api/billing/webhook")
+async def api_billing_webhook(request: Request):
+    """webhook de Stripe: firma obligatoria; mantiene users.tier al dia."""
+    from src.billing import stripe_gateway as sg
+
+    payload = await request.body()
+    try:
+        event = sg.verify_webhook(payload, request.headers.get("stripe-signature"))
+    except PermissionError as e:
+        raise HTTPException(401, str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"evento invalido: {e}")
+    return sg.apply_stripe_event(event)
+
+
+@app.get("/api/billing/status")
+def api_billing_status(email: str):
+    """tier + limites del usuario (lo consume el frontend para los paywalls)."""
+    from src.billing import stripe_gateway as sg
+
+    user = sg.get_or_create_user(email)
+    st = sg.user_status(user.id)
+    st["limits"] = sg.tier_limit(st["tier"])
+    st["stripe_configured"] = sg.stripe_configured()
+    return st
 
 
 # ----------------------------------------------------------------------

@@ -77,7 +77,7 @@ Motor con ejecución en la **apertura del día siguiente** (anti-lookahead), com
 │   │   ├── engine.py               - motor con costos (ejecución t+1)
 │   │   ├── metrics.py              - Sharpe, Sortino, MaxDD, PF, Win/Loss
 │   │   └── report.py               - informe técnico markdown
-│   ├── api/                        - Flask API + dashboard
+│   ├── api/                        - API FastAPI unificada
 │   └── utils/                      - config, logger
 ├── scripts/
 │   ├── train_advanced.py           - entrenamiento (sin leakage)
@@ -170,7 +170,7 @@ Cubren: geometría del split purgado (sin solape, purge, embargo), estacionaried
 - [x] CV de panel por fechas (corrige fuga cross-sectional multi-ticker)
 - [ ] Paper trading en vivo (Alpaca Paper API)
 - [ ] Detección de drift/regímenes (Evidently + HMM)
-- [ ] Migración Flask → FastAPI + WebSocket
+- [x] Migración Flask → FastAPI (Flask jubilado en Sprint 6)
 - [ ] Retraining automático por degradación de métricas
 - [ ] Ampliar universo (S&P 500, forex, crypto) y features exógenas
 

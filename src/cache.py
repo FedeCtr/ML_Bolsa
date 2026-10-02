@@ -4,7 +4,7 @@ Estrategia:
 - Si ``REDIS_URL`` apunta a un Redis alcanzable, se usa Redis (compartido
   entre procesos/instancias, ideal para prod con docker-compose).
 - Si no hay Redis o falla la conexion, se degrada a un cache en memoria con
-  TTL (suficiente para dev y para un solo proceso Uvicorn/Flask).
+  TTL (suficiente para dev y para un solo proceso Uvicorn).
 
 La serializacion es JSON para que cualquier valor numpy/pandas de las rutas
 pase limpio por Redis y por el fallback (``default=str`` como salvavidas).

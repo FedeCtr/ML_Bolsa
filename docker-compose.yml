@@ -14,6 +14,13 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - RESEND_API_KEY=${RESEND_API_KEY:-}
       - ALERT_EMAIL_FROM=${ALERT_EMAIL_FROM:-ML_Bolsa <onboarding@resend.dev>}
+      # Sprint 6: monetizacion (el frontend proxea /api/proxy/* a la API con API_INTERNAL_URL)
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+      - STRIPE_PRICE_PRO=${STRIPE_PRICE_PRO:-}
+      - STRIPE_PRICE_PRO_AMOUNT=${STRIPE_PRICE_PRO_AMOUNT:-2900}
+      - STRIPE_SUCCESS_URL=${STRIPE_SUCCESS_URL:-http://localhost:3000/pricing?status=success}
+      - STRIPE_CANCEL_URL=${STRIPE_CANCEL_URL:-http://localhost:3000/pricing?status=cancel}
     depends_on:
       postgres:
         condition: service_healthy
@@ -34,6 +41,9 @@ services:
         - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     container_name: mlbolsa-frontend
     restart: unless-stopped
+    environment:
+      # proxy runtime /api/proxy/* -> API (el tier no queda horneado en el bundle)
+      - API_INTERNAL_URL=http://api:8000
     depends_on:
       - api
     ports:
@@ -61,6 +71,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      api:
+        condition: service_started
     volumes:
       - app-data:/app/data
       - models-data:/app/models

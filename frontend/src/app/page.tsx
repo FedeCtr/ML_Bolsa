@@ -51,6 +51,12 @@ export default async function Dashboard() {
           >
             Screener
           </Link>
+          <Link
+            href="/pricing"
+            className="rounded-lg bg-gold-500 px-3 py-1.5 font-bold text-ink-950 hover:opacity-90"
+          >
+            Pro
+          </Link>
           <StatusDot
             ok={!!health && health.status === "ok"}
             label={

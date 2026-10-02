@@ -127,12 +127,23 @@ def send_email(to: str, subject: str, html: str) -> bool:
 # ----------------------------------------------------------------------
 
 def _subscribers() -> List[User]:
-    """usuarios con telegram o email configurado."""
+    """usuarios PRO con telegram o email configurado (alertas exclusivas Pro,
+    Sprint 6). Los usuarios sin tier asignado (beta local) se tratan como pro
+    para no romper las pruebas de canal con usuarios sembrados a mano."""
     try:
+        from ..billing.stripe_gateway import PRO_TIER
+
         init_db()
         with get_session_factory()() as s:
             users = s.query(User).all()
-            return [u for u in users if (u.telegram_chat_id or "").strip() or (u.email or "").strip()]
+            out = []
+            for u in users:
+                if not ((u.telegram_chat_id or "").strip() or (u.email or "").strip()):
+                    continue
+                if (u.tier or "").strip() not in ("", PRO_TIER):  # free excluido
+                    continue
+                out.append(u)
+            return out
     except Exception as exc:
         logger.warning(f"no se pudieron leer suscriptores: {exc}")
         return []

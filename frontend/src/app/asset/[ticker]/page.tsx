@@ -5,6 +5,7 @@ import { use, useEffect, useState } from "react";
 import InsightsCard from "@/components/InsightsCard";
 import PriceChart from "@/components/PriceChart";
 import { API_URL, type Signal } from "@/lib/api";
+import { billingStatus, localEmail, type BillingStatus } from "@/lib/billing";
 
 function fmt(n?: number | null, digits = 2): string {
   if (n === null || n === undefined) return "—";
@@ -30,23 +31,59 @@ export default function AssetPage({
   const ticker = raw.toUpperCase();
   const [signal, setSignal] = useState<Signal | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [needUpgrade, setNeedUpgrade] = useState(false);
+  const [billing, setBilling] = useState<BillingStatus | null>(null);
+
+  useEffect(() => {
+    const em = localEmail();
+    if (!em) return; // beta local abierta
+    billingStatus(em).then(setBilling).catch(() => setBilling(null));
+  }, []);
 
   useEffect(() => {
     let alive = true;
     setSignal(null);
     setError(null);
-    fetch(`${API_URL}/api/signal/${ticker}`)
+    setNeedUpgrade(false);
+    const em = localEmail();
+    fetch(`${API_URL}/api/signal/${ticker}${em ? `?email=${encodeURIComponent(em)}` : ""}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`API ${r.status}`))))
       .then((d: Signal) => {
         if (alive) setSignal(d);
       })
       .catch((e: Error) => {
-        if (alive) setError(e.message);
+        if (!alive) return;
+        if (e.message.endsWith("402")) setNeedUpgrade(true);
+        else setError(e.message);
       });
     return () => {
       alive = false;
     };
   }, [ticker]);
+
+  if (needUpgrade) {
+    return (
+      <main className="mx-auto max-w-7xl px-4 py-10">
+        <div className="glass mx-auto max-w-md rounded-xl p-10 text-center">
+          <div className="text-3xl">🔒</div>
+          <h1 className="mt-3 text-lg font-bold text-mist-100">{ticker} es Pro</h1>
+          <p className="mt-2 text-sm text-mist-400">
+            Desbloquea el análisis completo y las predicciones de esta acción con
+            Pro: gráfico interactivo, indicadores avanzados y AI Insights.
+          </p>
+          <Link
+            href="/pricing"
+            className="mt-5 inline-block rounded-lg bg-gold-500 px-5 py-2.5 text-xs font-bold text-ink-950 hover:opacity-90"
+          >
+            Ver Pro
+          </Link>
+          <Link href="/" className="mt-4 block text-xs text-mist-400 hover:underline">
+            ← volver al dashboard
+          </Link>
+        </div>
+      </main>
+    );
+  }
 
   if (error) {
     return (
@@ -78,6 +115,8 @@ export default function AssetPage({
   const style = SIGNAL_STYLES[signal.signal] ??
     "bg-ink-700/60 text-mist-200 border-mist-400/20";
   const rr = signal.risk_reward ?? null;
+  // paywall visual Sprint 6: con sesion free, el panel avanzado se difumina
+  const locked = !!billing && !billing.is_pro && !billing.free_tickers.includes(ticker);
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
@@ -116,13 +155,15 @@ export default function AssetPage({
         <Level label="Tamaño" value={signal.position_size_pct ? `${fmt(signal.position_size_pct, 1)}%` : "—"} />
       </div>
 
-      <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-3">
-        <div className="xl:col-span-2">
+      <div className="relative mt-6 grid grid-cols-1 gap-6 xl:grid-cols-3">
+        <div className={`xl:col-span-2 ${locked ? "pointer-events-none blur-sm" : ""}`}>
           <PriceChart signal={signal} />
         </div>
         <div className="space-y-6">
-          <InsightsCard ticker={ticker} />
-          <div className="glass rounded-xl p-5">
+          <div className={locked ? "pointer-events-none blur-sm" : ""}>
+            <InsightsCard ticker={ticker} />
+          </div>
+          <div className={`glass rounded-xl p-5 ${locked ? "pointer-events-none blur-sm" : ""}`}>
             <h3 className="text-sm font-semibold uppercase tracking-[0.14em] text-mist-200">
               Confianza
             </h3>
@@ -151,7 +192,7 @@ export default function AssetPage({
               deterministas (ATR + pivotes), no salen del modelo.
             </p>
           </div>
-          <div className="glass rounded-xl p-5 text-xs text-mist-400">
+          <div className={`glass rounded-xl p-5 text-xs text-mist-400 ${locked ? "pointer-events-none blur-sm" : ""}`}>
             <h3 className="text-sm font-semibold uppercase tracking-[0.14em] text-mist-200">
               Contexto técnico
             </h3>
@@ -162,6 +203,20 @@ export default function AssetPage({
               <Row k="Fecha señal" v={signal.trade_date ?? signal.as_of ?? "—"} />
             </dl>
           </div>
+          {locked && (
+            <div className="glass absolute inset-x-0 top-1/3 mx-auto max-w-sm rounded-xl border border-gold-400/40 p-6 text-center shadow-[0_0_60px_-10px_rgba(212,168,67,0.5)]">
+              <div className="text-2xl">🔒</div>
+              <p className="mt-2 text-sm font-semibold text-mist-100">
+                Desbloquea el análisis completo y las predicciones de esta acción con Pro
+              </p>
+              <Link
+                href="/pricing"
+                className="mt-4 inline-block rounded-lg bg-gold-500 px-5 py-2 text-xs font-bold text-ink-950 hover:opacity-90"
+              >
+                Ver Pro
+              </Link>
+            </div>
+          )}
         </div>
       </div>
     </main>
