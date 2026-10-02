@@ -67,13 +67,18 @@ def cancel_url() -> str:
 # ----------------------------------------------------------------------
 
 def get_or_create_user(email: str, display_name: str = "") -> User:
-    """identidad minima mientras Clerk no consume la API (beta local)."""
+    """identidad minima mientras Clerk no consume la API (beta local).
+
+    clerk_id se rellena con un marcador derivado del email (la columna es
+    NOT NULL + unique); el login real de Clerk lo sustituira por su id."""
     init_db()
     with get_session_factory()() as s:
         email = (email or "").strip().lower()
         u = s.query(User).filter_by(email=email).one_or_none()
         if u is None:
-            u = User(email=email, display_name=display_name or email.split("@")[0],
+            u = User(email=email,
+                     clerk_id=f"local:{email}",
+                     display_name=display_name or email.split("@")[0],
                      tier=FREE_TIER)
             s.add(u)
         elif display_name and not u.display_name:

@@ -20,10 +20,19 @@ def isolated_db(tmp_path, monkeypatch):
     set_engine(engine)
     monkeypatch.setattr("src.trading.paper.LEGACY_DB_NAME", "_n.db")
     monkeypatch.setattr("src.ml.watchlist.LEGACY_JSON_NAME", "_n.json")
+    # singletons de la API ligados al engine de tests anteriores: reset
+    import src.api.fastapi_app as _fa
+
+    _fa._signal_store = None
+    _fa._watchlists = None
+    _fa._paper = None
     reset_cache()
     yield engine
     set_engine(None)
     engine.dispose()
+    _fa._signal_store = None
+    _fa._watchlists = None
+    _fa._paper = None
     reset_cache()
 
 
@@ -75,11 +84,13 @@ def test_get_or_create_user_and_status(isolated_db):
 # ----------------------------------------------------------------------
 
 def test_apply_checkout_completed_activates_pro(isolated_db):
-    from src.billing.stripe_gateway import apply_stripe_event, user_status
+    from src.billing.stripe_gateway import (
+        apply_stripe_event,
+        get_or_create_user,
+        user_status,
+    )
 
-    u = get_or_create_user.__wrapped__ if hasattr(get_or_create_user, "__wrapped__") else None  # noqa: F841
-    from src.billing.stripe_gateway import get_or_create_user as goc
-    user = goc("buyer@example.com")
+    user = get_or_create_user("buyer@example.com")
 
     res = apply_stripe_event(_event("checkout.session.completed", {
         "client_reference_id": str(user.id),

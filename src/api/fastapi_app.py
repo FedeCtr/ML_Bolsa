@@ -383,10 +383,10 @@ def api_universe_info():
 
 @app.get("/api/signal/{ticker}")
 def api_signal(ticker: str, period: str = "1y", email: Optional[str] = None):
-    p = _predictor()
     ticker = ticker.upper()
-    # paywall Sprint 6: sin email = beta local abierta; con email, tier free
-    # solo accede a los activos demo
+    # paywall Sprint 6 ANTES de cargar modelo/datos (determinista y barato):
+    # sin email = beta local abierta; con email, tier free solo accede a los
+    # activos demo
     if email:
         from src.billing import stripe_gateway as sg
 
@@ -397,6 +397,7 @@ def api_signal(ticker: str, period: str = "1y", email: Optional[str] = None):
                 "message": f"Desbloquea el analisis completo de {ticker} con Pro",
                 "ticker": ticker,
             })
+    p = _predictor()
     try:
         res = _download_with_context(ticker, period)
         if res is None:
